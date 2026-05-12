@@ -1417,12 +1417,6 @@ impl View for Home {
                 }
                 true
             },
-            Event::Gesture(GestureEvent::Rotate { quarter_turns, .. }) if quarter_turns != 0 => {
-                let (_, dir) = CURRENT_DEVICE.mirroring_scheme();
-                let n = (4 + (context.display.rotation - dir * quarter_turns)) % 4;
-                hub.send(Event::Select(EntryId::Rotate(n))).ok();
-                true
-            },
             Event::Gesture(GestureEvent::Arrow { dir, .. }) => {
                 match dir {
                     Dir::West => self.go_to_page(0, hub, rq, context),

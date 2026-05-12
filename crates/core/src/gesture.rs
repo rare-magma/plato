@@ -65,11 +65,6 @@ pub enum GestureEvent {
         center: Point,
         factor: f32,
     },
-    Rotate {
-        center: Point,
-        quarter_turns: i8,
-        angle: f32,
-    },
     Cross(Point),
     Diamond(Point),
     HoldFingerShort(Point, i32),
@@ -92,7 +87,6 @@ impl fmt::Display for GestureEvent {
             GestureEvent::MultiCorner { dir, .. } => write!(f, "Multicorner {}", dir),
             GestureEvent::Pinch { axis, center, factor, .. } => write!(f, "Pinch {} {} {:.2}", axis, center, factor),
             GestureEvent::Spread { axis, center, factor, .. } => write!(f, "Spread {} {} {:.2}", axis, center, factor),
-            GestureEvent::Rotate { center, quarter_turns, .. } => write!(f, "Rotate {} {}", center, *quarter_turns as i32 * 90),
             GestureEvent::Cross(pt) => write!(f, "Cross {}", pt),
             GestureEvent::Diamond(pt) => write!(f, "Diamond {}", pt),
             GestureEvent::HoldFingerShort(pt, id) => write!(f, "Short-held finger {} {}", id, pt),
@@ -276,14 +270,7 @@ pub fn parse_gesture_events(rx: &Receiver<DeviceEvent>, ty: &Sender<Event>) {
                             (GestureEvent::Arrow { start: s, end: e, .. }, GestureEvent::Tap(c)) |
                             (GestureEvent::Tap(c), GestureEvent::Corner { start: s, end: e, .. }) |
                             (GestureEvent::Corner { start: s, end: e, .. }, GestureEvent::Tap(c)) => {
-                                // Angle are positive in the counter clockwise direction.
-                                let angle = ((e - c).angle() - (s - c).angle()).to_degrees();
-                                let quarter_turns = (angle / 90.0).round() as i8;
-                                ty.send(Event::Gesture(GestureEvent::Rotate {
-                                    angle,
-                                    quarter_turns,
-                                    center: c,
-                                })).ok();
+                                let _ = (c, s, e);
                             },
                             _ => (),
                         }

@@ -2695,12 +2695,6 @@ impl Reader {
 impl View for Reader {
     fn handle_event(&mut self, evt: &Event, hub: &Hub, _bus: &mut Bus, rq: &mut RenderQueue, context: &mut Context) -> bool {
         match *evt {
-            Event::Gesture(GestureEvent::Rotate { quarter_turns, .. }) if quarter_turns != 0 => {
-                let (_, dir) = CURRENT_DEVICE.mirroring_scheme();
-                let n = (4 + (context.display.rotation - dir * quarter_turns)) % 4;
-                hub.send(Event::Select(EntryId::Rotate(n))).ok();
-                true
-            },
             Event::Gesture(GestureEvent::Swipe { dir, start, end }) if self.rect.includes(start) => {
                 match self.view_port.zoom_mode {
                     ZoomMode::FitToPage | ZoomMode::FitToWidth => {

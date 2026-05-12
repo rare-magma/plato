@@ -518,12 +518,6 @@ impl View for Calculator {
                 self.set_margin_width(width, rq, context);
                 true
             },
-            Event::Gesture(GestureEvent::Rotate { quarter_turns, .. }) if quarter_turns != 0 => {
-                let (_, dir) = CURRENT_DEVICE.mirroring_scheme();
-                let n = (4 + (context.display.rotation - dir * quarter_turns)) % 4;
-                hub.send(Event::Select(EntryId::Rotate(n))).ok();
-                true
-            },
             Event::Gesture(GestureEvent::HoldFingerShort(center, ..)) if self.rect.includes(center) => {
                 rq.add(RenderData::new(self.id, self.rect, UpdateMode::Full));
                 true
