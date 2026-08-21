@@ -201,6 +201,12 @@ margin-width = 2
 # The number of remembered inputs.
 history-size = 4_096
 
+# Miniflux RSS reader configuration. Create an API key under
+# Settings > API Keys in Miniflux. Leave these empty to disable the app.
+[miniflux]
+domain = ""
+api-key = ""
+
 [battery]
 # Warn about the battery level being low, when the level
 # goes below `warn` percents.

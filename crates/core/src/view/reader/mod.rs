@@ -92,6 +92,7 @@ pub struct Reader {
     page_turns: usize,
     reflowable: bool,
     ephemeral: bool,
+    miniflux_entry_id: Option<u64>,
     finished: bool,
 }
 
@@ -388,6 +389,7 @@ impl Reader {
                 page_turns: 0,
                 contrast,
                 ephemeral: false,
+                miniflux_entry_id: None,
                 reflowable,
                 finished: false,
             })
@@ -453,6 +455,7 @@ impl Reader {
             page_turns: 0,
             contrast: Contrast::default(),
             ephemeral: true,
+            miniflux_entry_id: None,
             reflowable: true,
             finished: false,
         }
@@ -1800,6 +1803,10 @@ impl Reader {
         }
     }
 
+    pub fn set_miniflux_entry_id(&mut self, entry_id: u64) {
+        self.miniflux_entry_id = Some(entry_id);
+    }
+
     pub fn toggle_title_menu(&mut self, rect: Rectangle, enable: Option<bool>, rq: &mut RenderQueue, context: &mut Context) {
         if let Some(index) = locate_by_id(self, ViewId::TitleMenu) {
             if let Some(true) = enable {
@@ -1856,6 +1863,11 @@ impl Reader {
 
             if self.info.reader.as_ref().map_or(false, |r| !r.bookmarks.is_empty()) {
                 entries.push(EntryKind::Command("Bookmarks".to_string(), EntryId::Bookmarks));
+            }
+
+            if let Some(entry_id) = self.miniflux_entry_id {
+                entries.push(EntryKind::Command("Mark as Unread".to_string(),
+                                                EntryId::MinifluxMarkUnread(entry_id)));
             }
 
             if !entries.is_empty() {
@@ -3875,6 +3887,11 @@ impl View for Reader {
             Event::Select(EntryId::ToggleInverted) => {
                 self.update_noninverted_regions(!context.fb.inverted());
                 false
+            },
+            Event::Select(EntryId::MinifluxMarkUnread(entry_id)) => {
+                hub.send(Event::MinifluxSetStatus(entry_id, crate::view::miniflux::MinifluxStatus::Unread)).ok();
+                self.toggle_title_menu(Rectangle::default(), Some(false), rq, context);
+                true
             },
             Event::Reseed => {
                 self.reseed(rq, context);

@@ -42,6 +42,7 @@ pub mod calculator;
 pub mod sketch;
 pub mod touch_events;
 pub mod rotation_values;
+pub mod miniflux;
 
 use std::ops::{Deref, DerefMut};
 use std::time::{Instant, Duration};
@@ -64,6 +65,7 @@ use crate::gesture::GestureEvent;
 use self::calculator::LineOrigin;
 use self::key::KeyKind;
 use crate::context::Context;
+use self::miniflux::{MinifluxEntry, MinifluxStatus};
 
 // Border thicknesses in pixels, at 300 DPI.
 pub const THICKNESS_SMALL: f32 = 1.0;
@@ -297,6 +299,10 @@ pub enum Event {
     Key(KeyKind),
     Open(Box<Info>),
     OpenHtml(String, Option<String>),
+    OpenMinifluxEntry(Box<MinifluxEntry>),
+    MinifluxOpen(u64),
+    MinifluxResponse(serde_json::Value),
+    MinifluxSetStatus(u64, MinifluxStatus),
     LoadPixmap(usize),
     Update(UpdateMode),
     RefreshBookPreview(PathBuf, Option<PathBuf>),
@@ -376,6 +382,7 @@ pub enum AppCmd {
     },
     TouchEvents,
     RotationValues,
+    Miniflux,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -394,6 +401,7 @@ pub enum ViewId {
     KeyboardLayoutMenu,
     Frontlight,
     Dictionary,
+    Miniflux,
     FontSizeMenu,
     TextAlignMenu,
     FontFamilyMenu,
@@ -568,6 +576,9 @@ pub enum EntryId {
     ToggleWifi,
     Rotate(i8),
     Launch(AppCmd),
+    MinifluxCategory(Option<u64>),
+    MinifluxRefresh,
+    MinifluxMarkUnread(u64),
     SetPenSize(i32),
     SetPenColor(Color),
     TogglePenDynamism,

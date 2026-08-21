@@ -47,6 +47,7 @@ Any 4.*X*.*Y* firmware, with *X* ≥ 6, will do.
 - Define words using *dictd* dictionaries.
 - Annotations, highlights and bookmarks.
 - Retrieve articles from online sources through [hooks](doc/HOOKS.md) (an example *wallabag* [article fetcher](doc/ARTICLE_FETCHER.md) is provided).
+- Read and synchronize unread RSS entries with [Miniflux](doc/MINIFLUX.md).
 
 [![Tn01](artworks/thumbnail01.png)](artworks/screenshot01.png) [![Tn02](artworks/thumbnail02.png)](artworks/screenshot02.png) [![Tn03](artworks/thumbnail03.png)](artworks/screenshot03.png) [![Tn04](artworks/thumbnail04.png)](artworks/screenshot04.png)
 

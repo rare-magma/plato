@@ -123,6 +123,7 @@ pub struct Settings {
     pub dictionary: DictionarySettings,
     pub sketch: SketchSettings,
     pub calculator: CalculatorSettings,
+    pub miniflux: MinifluxSettings,
     pub battery: BatterySettings,
     pub frontlight_levels: LightLevels,
 }
@@ -207,6 +208,13 @@ pub struct CalculatorSettings {
     pub font_size: f32,
     pub margin_width: i32,
     pub history_size: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct MinifluxSettings {
+    pub domain: String,
+    pub api_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -548,6 +556,7 @@ impl Default for Settings {
             dictionary: DictionarySettings::default(),
             sketch: SketchSettings::default(),
             calculator: CalculatorSettings::default(),
+            miniflux: MinifluxSettings::default(),
             battery: BatterySettings::default(),
             frontlight_levels: LightLevels::default(),
             frontlight_presets: Vec::new(),

@@ -20,6 +20,7 @@ use plato_core::view::calculator::Calculator;
 use plato_core::view::sketch::Sketch;
 use plato_core::view::touch_events::TouchEvents;
 use plato_core::view::rotation_values::RotationValues;
+use plato_core::view::miniflux::{Miniflux, MinifluxStatus, entry_as_html};
 use plato_core::document::sys_info_as_html;
 use plato_core::input::{DeviceEvent, PowerSource, ButtonCode, ButtonStatus, VAL_RELEASE, VAL_PRESS};
 use plato_core::input::{raw_events, device_events, usb_events, display_rotate_event, button_scheme_event};
@@ -411,6 +412,9 @@ pub fn run() -> Result<(), Error> {
                                                       &tx, &mut rq, &mut context);
                         context.online = true;
                         view.children_mut().push(Box::new(notif) as Box<dyn View>);
+                        if view.is::<Miniflux>() {
+                            view.handle_event(&evt, &tx, &mut bus, &mut rq, &mut context);
+                        }
                         if view.is::<Home>() {
                             view.handle_event(&evt, &tx, &mut bus, &mut rq, &mut context);
                         } else if let Some(entry) = history.get_mut(0).filter(|entry| entry.view.is::<Home>()) {
@@ -777,6 +781,22 @@ pub fn run() -> Result<(), Error> {
                 });
                 view = next_view;
             },
+            Event::OpenMinifluxEntry(ref entry) => {
+                view.children_mut().retain(|child| !child.is::<Menu>());
+                let html = entry_as_html(entry);
+                let mut r = Reader::from_html(context.fb.rect(), &html, None, &tx, &mut context);
+                r.set_miniflux_entry_id(entry.id);
+                let mut next_view = Box::new(r) as Box<dyn View>;
+                transfer_notifications(view.as_mut(), next_view.as_mut(), &mut rq, &mut context);
+                history.push(HistoryItem {
+                    view,
+                    rotation: context.display.rotation,
+                    monochrome: context.fb.monochrome(),
+                    dithered: context.fb.dithered(),
+                });
+                view = next_view;
+                tx.send(Event::MinifluxSetStatus(entry.id, MinifluxStatus::Read)).ok();
+            },
             Event::OpenHtml(ref html, ref link_uri) => {
                 view.children_mut().retain(|child| !child.is::<Menu>());
                 let r = Reader::from_html(context.fb.rect(), html, link_uri.as_deref(), &tx, &mut context);
@@ -806,6 +826,9 @@ pub fn run() -> Result<(), Error> {
                     },
                     AppCmd::RotationValues => {
                         Box::new(RotationValues::new(context.fb.rect(), &mut rq, &mut context))
+                    },
+                    AppCmd::Miniflux => {
+                        Box::new(Miniflux::new(context.fb.rect(), &tx, &mut rq, &mut context))
                     },
                 };
                 transfer_notifications(view.as_mut(), next_view.as_mut(), &mut rq, &mut context);
@@ -936,6 +959,12 @@ pub fn run() -> Result<(), Error> {
                 };
                 let notif = Notification::new(msg, &tx, &mut rq, &mut context);
                 view.children_mut().push(Box::new(notif) as Box<dyn View>);
+            },
+            Event::MinifluxSetStatus(..) |
+            Event::MinifluxResponse(..) if !view.is::<Miniflux>() => {
+                if let Some(entry) = history.iter_mut().rev().find(|entry| entry.view.is::<Miniflux>()) {
+                    entry.view.handle_event(&evt, &tx, &mut VecDeque::new(), &mut rq, &mut context);
+                }
             },
             Event::CheckFetcher(..) |
             Event::FetcherAddDocument(..) |
