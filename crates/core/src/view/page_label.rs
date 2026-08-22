@@ -49,8 +49,8 @@ impl PageLabel {
             return "No pages".to_string();
         }
         let (current_page, pages_count) = if self.synthetic {
-            (self.current_page as f64 / BYTES_PER_PAGE,
-             self.pages_count as f64 / BYTES_PER_PAGE)
+            (self.current_page as f64 / BYTES_PER_PAGE + 1.0,
+             (self.pages_count as f64 / BYTES_PER_PAGE).ceil())
         } else {
             (self.current_page as f64 + 1.0,
              self.pages_count as f64)
