@@ -25,12 +25,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Sender};
-use std::sync::Once;
 use std::thread;
-use std::time::Duration;
 
 const AUTH_HEADER: &str = "X-Auth-Token";
-static TLS_PROVIDER: Once = Once::new();
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum MinifluxStatus {
@@ -133,21 +130,8 @@ impl Api {
     fn new(domain: String, api_key: String) -> Result<Api, String> {
         let domain = domain.trim_end_matches('/').to_string();
         eprintln!("[miniflux] Initializing API client for {}.", domain);
-        TLS_PROVIDER.call_once(|| {
-            match rustls::crypto::ring::default_provider().install_default() {
-                Ok(()) => eprintln!("[miniflux] Installed the rustls ring crypto provider."),
-                Err(_) => eprintln!("[miniflux] A rustls crypto provider was already installed."),
-            }
-        });
-        let client = Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()
-            .map_err(|e| {
-                let message = format!("can't build HTTP client: {}", e);
-                eprintln!("[miniflux] {}.", message);
-                message
-            })?;
-        eprintln!("[miniflux] API client initialized with a 20 second timeout.");
+        let client = Client::new();
+        eprintln!("[miniflux] API client initialized.");
         Ok(Api {
             client,
             domain,
