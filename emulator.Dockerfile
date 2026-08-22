@@ -27,8 +27,13 @@ FROM rust:1.97-slim-bookworm AS mupdf-libs
 
 FROM rust:1.97-slim-bookworm AS plato-emulator
 
+    ARG MUPDF_VERSION
+
     COPY --from=mupdf-libs /usr/local/lib/libmupdf*.a /usr/local/lib/
     COPY --from=mupdf-libs /usr/local/include/mupdf/ /usr/local/include/mupdf/
+    # Reuse the source from the cached MuPDF download/build stage instead of
+    # downloading it again after the application source is copied.
+    COPY --from=mupdf-libs /mupdf-${MUPDF_VERSION}-source/ /usr/src/plato/thirdparty/mupdf/
 
     COPY . /usr/src/plato
 
@@ -47,11 +52,7 @@ FROM rust:1.97-slim-bookworm AS plato-emulator
         libopenjp2-7-dev \
         libsdl2-dev \
         libstdc++-12-dev \
-        wget \
      && rm --recursive --force /var/lib/apt/lists/* \
-     ## download and extract MuPDF files
-     && cd /usr/src/plato/thirdparty/ \
-     && ./download.sh mupdf \
      ## build MuPDF wrapper
      && cd /usr/src/plato/mupdf_wrapper \
      && ./build.sh \
@@ -59,7 +60,7 @@ FROM rust:1.97-slim-bookworm AS plato-emulator
      && cd /usr/src/plato \
      && cargo build --package emulator \
      ## remove unnecessary packages
-     && apt-get purge --yes --autoremove git wget
+     && apt-get purge --yes --autoremove git
 
     WORKDIR /usr/src/plato
 

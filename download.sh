@@ -1,5 +1,7 @@
 #! /bin/sh
 
+set -e
+
 version=$(cargo pkgid -p plato | cut -d '#' -f 2)
 archive="plato-${version}.zip"
 if ! [ -e "$archive" ] ; then

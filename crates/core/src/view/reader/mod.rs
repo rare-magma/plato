@@ -882,7 +882,9 @@ impl Reader {
                 match dir {
                     CycleDir::Next => {
                         self.finished = true;
-                        let action = if self.ephemeral {
+                        let action = if self.miniflux_entry_id.is_some() {
+                            FinishedAction::Close
+                        } else if self.ephemeral {
                             FinishedAction::Notify
                         } else {
                             context.settings.reader.finished

@@ -438,8 +438,6 @@ fn run() -> Result<(), Error> {
                     }
                 },
                 Event::OpenMinifluxEntry(ref entry) => {
-                    eprintln!("[miniflux] Opening entry {} in the reader (content_bytes={}).",
-                              entry.id, entry.content.len());
                     view.children_mut().retain(|child| !child.is::<Menu>());
                     let html = entry_as_html(entry);
                     let mut r = Reader::from_html(context.fb.rect(), &html, None, &tx, &mut context);
@@ -477,7 +475,6 @@ fn run() -> Result<(), Error> {
                             Box::new(RotationValues::new(context.fb.rect(), &mut rq, &mut context))
                         },
                         AppCmd::Miniflux => {
-                            eprintln!("[miniflux] Launch requested.");
                             Box::new(Miniflux::new(context.fb.rect(), &tx, &mut rq, &mut context))
                         },
                     };
@@ -605,7 +602,6 @@ fn run() -> Result<(), Error> {
                 Event::MinifluxSetStatus(..) |
                 Event::MinifluxResponse(..) if !view.is::<Miniflux>() => {
                     if let Some(miniflux) = history.iter_mut().rev().find(|view| view.is::<Miniflux>()) {
-                        eprintln!("[miniflux] Forwarding event to background Miniflux view.");
                         miniflux.handle_event(&evt, &tx, &mut VecDeque::new(), &mut rq, &mut context);
                     } else {
                         eprintln!("[miniflux] Dropping event because no Miniflux view exists in history.");

@@ -19,6 +19,58 @@ RUN apt-get update \
  && mv --verbose /gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf/ /gcc-linaro/ \
  && rm --verbose /gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf.tar.xz
 
+# Keep network downloads in their own layer. This stage only depends on the
+# package metadata and download scripts, so source changes do not invalidate it.
+FROM rust:1.97-slim-trixie AS plato-downloads
+
+WORKDIR /usr/src/plato
+
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends \
+    jq \
+    tar \
+    unzip \
+    wget \
+ && rm --recursive --force /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock download.sh ./
+COPY crates/core/Cargo.toml crates/core/Cargo.toml
+COPY crates/emulator/Cargo.toml crates/emulator/Cargo.toml
+COPY crates/fetcher/Cargo.toml crates/fetcher/Cargo.toml
+COPY crates/importer/Cargo.toml crates/importer/Cargo.toml
+COPY crates/plato/Cargo.toml crates/plato/Cargo.toml
+COPY thirdparty/download.sh thirdparty/download.sh
+
+# Cargo validates workspace targets even though this stage only needs the
+# package version. Add empty targets so the metadata-only workspace parses.
+RUN mkdir --parents \
+        crates/core/src \
+        crates/emulator/src \
+        crates/fetcher/src \
+        crates/importer/src \
+        crates/plato/src \
+ && touch \
+        crates/core/src/lib.rs \
+        crates/emulator/src/main.rs \
+        crates/fetcher/src/main.rs \
+        crates/importer/src/main.rs \
+        crates/plato/src/main.rs
+
+RUN ./download.sh 'libs/*' \
+ && cd thirdparty \
+ && ./download.sh mupdf \
+ && cd ../libs \
+ && ln --symbolic --force libz.so.1 libz.so \
+ && ln --symbolic --force libbz2.so.1.0 libbz2.so \
+ && ln --symbolic --force libpng16.so.16 libpng16.so \
+ && ln --symbolic --force libjpeg.so.9 libjpeg.so \
+ && ln --symbolic --force libopenjp2.so.7 libopenjp2.so \
+ && ln --symbolic --force libjbig2dec.so.0 libjbig2dec.so \
+ && ln --symbolic --force libfreetype.so.6 libfreetype.so \
+ && ln --symbolic --force libharfbuzz.so.0 libharfbuzz.so \
+ && ln --symbolic --force libgumbo.so.2 libgumbo.so \
+ && ln --symbolic --force libdjvulibre.so.21 libdjvulibre.so
+
 FROM rust:1.97-slim-trixie
 
 # add Linaro GCC to $PATH
@@ -51,6 +103,9 @@ RUN apt-get update \
 
 WORKDIR /usr/src/plato
 
+# Pre-populate build.sh's downloaded inputs so it selects its skip path.
+COPY --from=plato-downloads /usr/src/plato/libs/ /usr/src/plato/libs/
+COPY --from=plato-downloads /usr/src/plato/thirdparty/mupdf/ /usr/src/plato/thirdparty/mupdf/
 COPY . .
 
 RUN ./build.sh

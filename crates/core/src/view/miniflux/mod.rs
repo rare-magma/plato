@@ -151,7 +151,6 @@ impl Api {
         } else {
             format!("https://{}", domain)
         };
-        eprintln!("[miniflux] Initializing API client for {}.", domain);
         let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
             .iter()
             .map(|der| Certificate::from_der(der.as_ref()))
@@ -161,10 +160,6 @@ impl Api {
                 eprintln!("[miniflux] {}.", message);
                 message
             })?;
-        eprintln!(
-            "[miniflux] Loaded {} bundled Mozilla TLS roots.",
-            roots.len()
-        );
         let client = Client::builder()
             .timeout(Duration::from_secs(20))
             .tls_certs_only(roots)
@@ -174,7 +169,6 @@ impl Api {
                 eprintln!("[miniflux] {} (debug={:?}).", message, e);
                 message
             })?;
-        eprintln!("[miniflux] API client initialized with bundled roots and a 20 second timeout.");
         Ok(Api {
             client,
             domain,
@@ -184,7 +178,6 @@ impl Api {
 
     fn checked_json(operation: &str, response: Response) -> Result<JsonValue, String> {
         let status = response.status();
-        eprintln!("[miniflux] {} returned HTTP {}.", operation, status);
         if status.is_success() {
             response.json().map_err(|e| {
                 let message = format!("invalid JSON response: {}", e);
@@ -278,10 +271,6 @@ impl Api {
             .map_err(|e| Self::transport_error(&operation, e))?;
         let response_status = response.status();
         if response_status.is_success() {
-            eprintln!(
-                "[miniflux] {} returned HTTP {}.",
-                operation, response_status
-            );
             Ok(())
         } else {
             Self::checked_json(&operation, response).map(|_| ())
@@ -297,7 +286,6 @@ fn spawn_api_worker(
     let api = Api::new(domain, api_key)?;
     let (sender, receiver) = mpsc::channel::<ApiCommand>();
     let hub = hub.clone();
-    eprintln!("[miniflux] Starting API worker thread.");
     thread::spawn(move || {
         while let Ok(command) = receiver.recv() {
             let description = command.description();
@@ -307,10 +295,6 @@ fn spawn_api_worker(
                 | ApiCommand::GetEntry { request_id, .. }
                 | ApiCommand::SetStatus { request_id, .. } => request_id,
             };
-            eprintln!(
-                "[miniflux] Request {} started: {}.",
-                request_id, description
-            );
             let response = match command {
                 ApiCommand::ListCategories { .. } => api.categories().map(|categories| {
                     json!({"type": "categories", "requestId": request_id,
@@ -337,13 +321,7 @@ fn spawn_api_worker(
                 }),
             };
             let response = match response {
-                Ok(response) => {
-                    eprintln!(
-                        "[miniflux] Request {} completed: {}.",
-                        request_id, description
-                    );
-                    response
-                }
+                Ok(response) => response,
                 Err(message) => {
                     eprintln!(
                         "[miniflux] Request {} failed ({}): {}.",
@@ -360,7 +338,6 @@ fn spawn_api_worker(
                 break;
             }
         }
-        eprintln!("[miniflux] API worker thread stopped.");
     });
     Ok(sender)
 }
@@ -453,9 +430,6 @@ impl Miniflux {
         app.rebuild(rq, context);
 
         let settings = &context.settings.miniflux;
-        eprintln!("[miniflux] Opening app (online={}, wifi={}, domain_configured={}, api_key_configured={}).",
-                  context.online, context.settings.wifi,
-                  !settings.domain.trim().is_empty(), !settings.api_key.trim().is_empty());
         if settings.domain.trim().is_empty() || settings.api_key.trim().is_empty() {
             eprintln!("[miniflux] Configuration is incomplete; refusing to start API worker.");
             hub.send(Event::Notify(
@@ -467,20 +441,15 @@ impl Miniflux {
 
         match spawn_api_worker(settings.domain.clone(), settings.api_key.clone(), hub) {
             Ok(worker) => {
-                eprintln!("[miniflux] API worker initialized.");
                 app.worker = Some(worker);
                 app.configured = true;
                 app.refresh();
-                if context.online {
-                    eprintln!("[miniflux] Network is online; requesting initial data.");
-                } else {
-                    eprintln!("[miniflux] Network is offline; initial request queued and waiting for NetUp retry.");
+                if !context.online {
                     hub.send(Event::Notify(
                         "Waiting for a network connection.".to_string(),
                     ))
                     .ok();
                     if !context.settings.wifi {
-                        eprintln!("[miniflux] Requesting WiFi enable.");
                         hub.send(Event::SetWifi(true)).ok();
                     }
                 }
@@ -523,7 +492,6 @@ impl Miniflux {
 
     fn refresh(&mut self) {
         if !self.configured {
-            eprintln!("[miniflux] Refresh ignored because the API worker is not configured.");
             return;
         }
         let categories_request = self.request_id();
@@ -536,7 +504,6 @@ impl Miniflux {
 
     fn request_entries(&mut self) {
         if !self.configured {
-            eprintln!("[miniflux] Entry request ignored because the API worker is not configured.");
             return;
         }
         let request_id = self.request_id();
@@ -730,17 +697,12 @@ impl Miniflux {
             .get("type")
             .and_then(JsonValue::as_str)
             .unwrap_or("missing-type");
-        eprintln!(
-            "[miniflux] Handling response {} of type '{}'.",
-            request_id, response_type
-        );
         match response.get("type").and_then(JsonValue::as_str) {
             Some("categories") if self.categories_request == Some(request_id) => {
                 self.categories_request = None;
                 if let Some(value) = response.get("categories") {
                     match serde_json::from_value::<Vec<MinifluxCategory>>(value.clone()) {
                         Ok(categories) => {
-                            eprintln!("[miniflux] Parsed {} categories.", categories.len());
                             self.categories = categories;
                         }
                         Err(err) => {
@@ -767,12 +729,6 @@ impl Miniflux {
                 if let Some(value) = response.get("result") {
                     match serde_json::from_value::<EntriesResult>(value.clone()) {
                         Ok(result) => {
-                            eprintln!(
-                                "[miniflux] Parsed {} of {} unread entries for response {}.",
-                                result.entries.len(),
-                                result.total,
-                                request_id
-                            );
                             self.total = result.total;
                             self.entries = result.entries;
                             self.pages_count = self.total.max(1).div_ceil(self.per_page);
@@ -803,11 +759,6 @@ impl Miniflux {
                 if let Some(value) = response.get("entry") {
                     match serde_json::from_value::<MinifluxEntry>(value.clone()) {
                         Ok(entry) => {
-                            eprintln!(
-                                "[miniflux] Parsed entry {} (content_bytes={}).",
-                                entry.id,
-                                entry.content.len()
-                            );
                             hub.send(Event::OpenMinifluxEntry(Box::new(entry))).ok();
                         }
                         Err(err) => {
@@ -828,11 +779,6 @@ impl Miniflux {
             }
             Some("status") => {
                 if let Some(status) = self.status_requests.remove(&request_id) {
-                    eprintln!(
-                        "[miniflux] Status update response {} succeeded: {}.",
-                        request_id,
-                        status.as_str()
-                    );
                     if status == MinifluxStatus::Unread {
                         hub.send(Event::Notify("Marked entry as unread.".to_string()))
                             .ok();
@@ -912,12 +858,10 @@ impl View for Miniflux {
                 true
             }
             Event::Device(DeviceEvent::NetUp) => {
-                eprintln!("[miniflux] Received network-up event; refreshing.");
                 self.refresh();
                 true
             }
             Event::Reseed => {
-                eprintln!("[miniflux] App became visible again; refreshing.");
                 self.refresh();
                 self.rebuild(rq, context);
                 true
