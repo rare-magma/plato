@@ -967,12 +967,20 @@ impl View for EntryRow {
         };
         fb.draw_rectangle(&self.rect, scheme[0]);
         let dpi = CURRENT_DEVICE.dpi;
+        let date = self
+            .entry
+            .published_at
+            .get(..10)
+            .unwrap_or(&self.entry.published_at);
+        let date_plan = {
+            let date_font = font_from_style(fonts, &NORMAL_STYLE, dpi);
+            date_font.plan(date, None, None)
+        };
         let padding = {
             let title_font = font_from_style(fonts, &MD_TITLE, dpi);
             let padding = title_font.em() as i32;
-            let width = self.rect.width() as i32 - 2 * padding;
-            let mut title = title_font.plan(&self.entry.title, None, None);
-            title_font.crop_right(&mut title, width);
+            let width = self.rect.width() as i32 - 3 * padding - date_plan.width;
+            let title = title_font.plan(&self.entry.title, Some(width), None);
             title_font.render(
                 fb,
                 scheme[1],
@@ -981,7 +989,7 @@ impl View for EntryRow {
             );
             padding
         };
-        let width = self.rect.width() as i32 - 2 * padding;
+        let width = self.rect.width() as i32 - 3 * padding - date_plan.width;
         let detail = match (
             self.entry.feed.title.is_empty(),
             self.entry.author.is_empty(),
@@ -993,8 +1001,7 @@ impl View for EntryRow {
         };
         {
             let detail_font = font_from_style(fonts, &MD_AUTHOR, dpi);
-            let mut detail = detail_font.plan(&detail, None, None);
-            detail_font.crop_right(&mut detail, width);
+            let detail = detail_font.plan(&detail, Some(width), None);
             detail_font.render(
                 fb,
                 scheme[1],
@@ -1002,13 +1009,7 @@ impl View for EntryRow {
                 pt!(self.rect.min.x + padding, self.rect.max.y - padding / 2),
             );
         }
-        let date = self
-            .entry
-            .published_at
-            .get(..10)
-            .unwrap_or(&self.entry.published_at);
         let date_font = font_from_style(fonts, &NORMAL_STYLE, dpi);
-        let date_plan = date_font.plan(date, None, None);
         date_font.render(
             fb,
             scheme[1],
