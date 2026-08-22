@@ -896,6 +896,13 @@ impl Reader {
                                 self.children.push(Box::new(notif) as Box<dyn View>);
                             },
                             FinishedAction::Close => {
+                                if let Some(entry_id) = self.miniflux_entry_id {
+                                    hub.send(Event::MinifluxSetStatus(
+                                        entry_id,
+                                        crate::view::miniflux::MinifluxStatus::Read,
+                                    ))
+                                    .ok();
+                                }
                                 self.quit(context);
                                 hub.send(Event::Back).ok();
                             },

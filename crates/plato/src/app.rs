@@ -795,7 +795,8 @@ pub fn run() -> Result<(), Error> {
                     dithered: context.fb.dithered(),
                 });
                 view = next_view;
-                tx.send(Event::MinifluxSetStatus(entry.id, MinifluxStatus::Read)).ok();
+                tx.send(Event::MinifluxSetStatusQuiet(entry.id, MinifluxStatus::Read))
+                    .ok();
             },
             Event::OpenHtml(ref html, ref link_uri) => {
                 view.children_mut().retain(|child| !child.is::<Menu>());
@@ -961,6 +962,7 @@ pub fn run() -> Result<(), Error> {
                 view.children_mut().push(Box::new(notif) as Box<dyn View>);
             },
             Event::MinifluxSetStatus(..) |
+            Event::MinifluxSetStatusQuiet(..) |
             Event::MinifluxResponse(..) if !view.is::<Miniflux>() => {
                 if let Some(entry) = history.iter_mut().rev().find(|entry| entry.view.is::<Miniflux>()) {
                     entry.view.handle_event(&evt, &tx, &mut VecDeque::new(), &mut rq, &mut context);

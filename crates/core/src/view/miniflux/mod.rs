@@ -395,7 +395,7 @@ pub struct Miniflux {
     categories_request: Option<u64>,
     entries_request: Option<u64>,
     entry_request: Option<u64>,
-    status_requests: HashMap<u64, MinifluxStatus>,
+    status_requests: HashMap<u64, (MinifluxStatus, bool)>,
     configured: bool,
 }
 
@@ -525,9 +525,9 @@ impl Miniflux {
         });
     }
 
-    fn set_status(&mut self, entry_id: u64, status: MinifluxStatus) {
+    fn set_status(&mut self, entry_id: u64, status: MinifluxStatus, notify: bool) {
         let request_id = self.request_id();
-        self.status_requests.insert(request_id, status);
+        self.status_requests.insert(request_id, (status, notify));
         self.send(ApiCommand::SetStatus {
             request_id,
             entry_id,
@@ -682,6 +682,43 @@ impl Miniflux {
         self.children.push(Box::new(menu));
     }
 
+    fn toggle_entry_menu(
+        &mut self,
+        rect: Rectangle,
+        entry_id: u64,
+        enable: Option<bool>,
+        rq: &mut RenderQueue,
+        context: &mut Context,
+    ) {
+        if let Some(index) = locate_by_id(self, ViewId::MinifluxEntryMenu) {
+            if let Some(true) = enable {
+                return;
+            }
+            rq.add(RenderData::expose(
+                *self.child(index).rect(),
+                UpdateMode::Gui,
+            ));
+            self.children.remove(index);
+        } else {
+            if let Some(false) = enable {
+                return;
+            }
+            let entries = vec![EntryKind::Command(
+                "Mark as read".to_string(),
+                EntryId::MinifluxMarkRead(entry_id),
+            )];
+            let menu = Menu::new(
+                rect,
+                ViewId::MinifluxEntryMenu,
+                MenuKind::Contextual,
+                entries,
+                context,
+            );
+            rq.add(RenderData::new(menu.id(), *menu.rect(), UpdateMode::Gui));
+            self.children.push(Box::new(menu));
+        }
+    }
+
     fn handle_response(
         &mut self,
         response: &JsonValue,
@@ -778,8 +815,10 @@ impl Miniflux {
                 }
             }
             Some("status") => {
-                if let Some(status) = self.status_requests.remove(&request_id) {
-                    if status == MinifluxStatus::Unread {
+                if let Some((status, notify)) = self.status_requests.remove(&request_id) {
+                    if status == MinifluxStatus::Read {
+                        self.refresh();
+                    } else if status == MinifluxStatus::Unread && notify {
                         hub.send(Event::Notify("Marked entry as unread.".to_string()))
                             .ok();
                     }
@@ -831,7 +870,20 @@ impl View for Miniflux {
                 true
             }
             Event::MinifluxSetStatus(entry_id, status) => {
-                self.set_status(entry_id, status);
+                self.set_status(entry_id, status, true);
+                true
+            }
+            Event::MinifluxSetStatusQuiet(entry_id, status) => {
+                self.set_status(entry_id, status, false);
+                true
+            }
+            Event::ToggleMinifluxEntryMenu(rect, entry_id) => {
+                self.toggle_entry_menu(rect, entry_id, None, rq, context);
+                true
+            }
+            Event::Select(EntryId::MinifluxMarkRead(entry_id)) => {
+                self.set_status(entry_id, MinifluxStatus::Read, true);
+                self.toggle_entry_menu(Rectangle::default(), entry_id, Some(false), rq, context);
                 true
             }
             Event::Select(EntryId::MinifluxCategory(category_id)) => {
@@ -880,6 +932,10 @@ impl View for Miniflux {
             }
             Event::ToggleNear(ViewId::ClockMenu, rect) => {
                 toggle_clock_menu(self, rect, None, rq, context);
+                true
+            }
+            Event::Close(ViewId::MinifluxEntryMenu) => {
+                self.toggle_entry_menu(Rectangle::default(), 0, Some(false), rq, context);
                 true
             }
             Event::Back | Event::Select(EntryId::Quit) | Event::Select(EntryId::Reboot) => false,
@@ -944,7 +1000,7 @@ impl View for EntryRow {
         &mut self,
         evt: &Event,
         hub: &Hub,
-        _bus: &mut Bus,
+        bus: &mut Bus,
         rq: &mut RenderQueue,
         _context: &mut Context,
     ) -> bool {
@@ -953,6 +1009,16 @@ impl View for EntryRow {
                 self.active = true;
                 rq.add(RenderData::new(self.id, self.rect, UpdateMode::Gui));
                 hub.send(Event::MinifluxOpen(self.entry.id)).ok();
+                true
+            }
+            Event::Gesture(GestureEvent::HoldFingerShort(center, ..))
+                if self.rect.includes(center) =>
+            {
+                let point = pt!(center.x, self.rect.center().y);
+                bus.push_back(Event::ToggleMinifluxEntryMenu(
+                    Rectangle::from_point(point),
+                    self.entry.id,
+                ));
                 true
             }
             _ => false,
