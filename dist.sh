@@ -5,8 +5,7 @@
 [ -d bin ] || ./download.sh 'bin/*'
 [ -d resources ] || ./download.sh 'resources/*'
 [ -d hyphenation-patterns ] || ./download.sh 'hyphenation-patterns/*'
-[ -e target/arm-unknown-linux-gnueabihf/release/plato -a \
-  -e bin/miniflux/miniflux ] || ./build.sh
+[ -e target/arm-unknown-linux-gnueabihf/release/plato ] || ./build.sh
 
 mkdir -p dist/libs
 mkdir dist/dictionaries

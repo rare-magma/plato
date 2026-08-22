@@ -68,8 +68,3 @@ cd mupdf_wrapper
 cd ..
 
 cargo build --release --target=arm-unknown-linux-gnueabihf -p plato
-cargo build --profile release-minsized --target=arm-unknown-linux-gnueabihf \
-            --bin miniflux -p miniflux
-
-mkdir -p bin/miniflux
-cp target/arm-unknown-linux-gnueabihf/release-minsized/miniflux bin/miniflux/

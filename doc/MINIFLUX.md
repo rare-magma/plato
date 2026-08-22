@@ -23,9 +23,3 @@ the unread list. Opening an entry marks it as read in Miniflux. While reading a
 Miniflux entry, tap the title and select *Mark as Unread* to restore its unread status.
 
 The application requires a network connection. Plato will enable WiFi when needed.
-
-## Build and packaging
-
-`build.sh` builds the helper with the `release-minsized` profile and stages it at
-`bin/miniflux/miniflux`. The normal `dist.sh` copy of `bin/` then packages it as
-`dist/bin/miniflux/miniflux`, in the same way as the article fetcher.

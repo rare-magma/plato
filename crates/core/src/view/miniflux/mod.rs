@@ -19,16 +19,18 @@ use crate::view::{Bus, EntryId, EntryKind, Event, Hub, Id, ID_FEEDER};
 use crate::view::{
     RenderData, RenderQueue, View, ViewId, BIG_BAR_HEIGHT, SMALL_BAR_HEIGHT, THICKNESS_MEDIUM,
 };
+use reqwest::blocking::{Client, Response};
+use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Sender};
+use std::sync::Once;
 use std::thread;
+use std::time::Duration;
 
-const APP_DIR: &str = "bin/miniflux";
-const APP_NAME: &str = "miniflux";
+const AUTH_HEADER: &str = "X-Auth-Token";
+static TLS_PROVIDER: Once = Once::new();
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum MinifluxStatus {
@@ -79,6 +81,181 @@ struct EntriesResult {
     entries: Vec<MinifluxEntry>,
 }
 
+enum ApiCommand {
+    ListCategories {
+        request_id: u64,
+    },
+    ListEntries {
+        request_id: u64,
+        category_id: Option<u64>,
+        offset: usize,
+        limit: usize,
+    },
+    GetEntry {
+        request_id: u64,
+        entry_id: u64,
+    },
+    SetStatus {
+        request_id: u64,
+        entry_id: u64,
+        status: MinifluxStatus,
+    },
+}
+
+struct Api {
+    client: Client,
+    domain: String,
+    api_key: String,
+}
+
+impl Api {
+    fn new(domain: String, api_key: String) -> Result<Api, String> {
+        TLS_PROVIDER.call_once(|| {
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .ok();
+        });
+        let client = Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|e| e.to_string())?;
+        Ok(Api {
+            client,
+            domain: domain.trim_end_matches('/').to_string(),
+            api_key,
+        })
+    }
+
+    fn checked_json(response: Response) -> Result<JsonValue, String> {
+        let status = response.status();
+        if status.is_success() {
+            response.json().map_err(|e| e.to_string())
+        } else {
+            let reason = status.canonical_reason().unwrap_or("HTTP error");
+            let message = response
+                .json::<JsonValue>()
+                .ok()
+                .and_then(|body| {
+                    body.get("error_message")
+                        .and_then(JsonValue::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| format!("{} {}", status.as_u16(), reason));
+            Err(message)
+        }
+    }
+
+    fn categories(&self) -> Result<JsonValue, String> {
+        let response = self
+            .client
+            .get(format!("{}/v1/categories", self.domain))
+            .header(AUTH_HEADER, &self.api_key)
+            .query(&[("counts", "true")])
+            .send()
+            .map_err(|e| e.to_string())?;
+        Self::checked_json(response)
+    }
+
+    fn entries(
+        &self,
+        category_id: Option<u64>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<JsonValue, String> {
+        let mut request = self
+            .client
+            .get(format!("{}/v1/entries", self.domain))
+            .header(AUTH_HEADER, &self.api_key)
+            .query(&[
+                ("status", "unread"),
+                ("order", "published_at"),
+                ("direction", "desc"),
+            ])
+            .query(&[("offset", offset), ("limit", limit)]);
+        if let Some(category_id) = category_id {
+            request = request.query(&[("category_id", category_id)]);
+        }
+        let response = request.send().map_err(|e| e.to_string())?;
+        Self::checked_json(response)
+    }
+
+    fn entry(&self, entry_id: u64) -> Result<JsonValue, String> {
+        let response = self
+            .client
+            .get(format!("{}/v1/entries/{}", self.domain, entry_id))
+            .header(AUTH_HEADER, &self.api_key)
+            .send()
+            .map_err(|e| e.to_string())?;
+        Self::checked_json(response)
+    }
+
+    fn set_status(&self, entry_id: u64, status: MinifluxStatus) -> Result<(), String> {
+        let response = self
+            .client
+            .put(format!("{}/v1/entries", self.domain))
+            .header(AUTH_HEADER, &self.api_key)
+            .header(CONTENT_TYPE, "application/json")
+            .json(&json!({"entry_ids": [entry_id], "status": status.as_str()}))
+            .send()
+            .map_err(|e| e.to_string())?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Self::checked_json(response).map(|_| ())
+        }
+    }
+}
+
+fn spawn_api_worker(
+    domain: String,
+    api_key: String,
+    hub: &Hub,
+) -> Result<Sender<ApiCommand>, String> {
+    let api = Api::new(domain, api_key)?;
+    let (sender, receiver) = mpsc::channel();
+    let hub = hub.clone();
+    thread::spawn(move || {
+        while let Ok(command) = receiver.recv() {
+            let request_id = match command {
+                ApiCommand::ListCategories { request_id }
+                | ApiCommand::ListEntries { request_id, .. }
+                | ApiCommand::GetEntry { request_id, .. }
+                | ApiCommand::SetStatus { request_id, .. } => request_id,
+            };
+            let response = match command {
+                ApiCommand::ListCategories { .. } => api.categories().map(|categories| {
+                    json!({"type": "categories", "requestId": request_id,
+                                              "categories": categories})
+                }),
+                ApiCommand::ListEntries {
+                    category_id,
+                    offset,
+                    limit,
+                    ..
+                } => api.entries(category_id, offset, limit).map(|result| {
+                    json!({"type": "entries", "requestId": request_id,
+                                            "result": result})
+                }),
+                ApiCommand::GetEntry { entry_id, .. } => api.entry(entry_id).map(|entry| {
+                    json!({"type": "entry", "requestId": request_id,
+                                        "entry": entry})
+                }),
+                ApiCommand::SetStatus {
+                    entry_id, status, ..
+                } => api.set_status(entry_id, status).map(|_| {
+                    json!({"type": "status", "requestId": request_id,
+                                    "entryId": entry_id, "status": status.as_str()})
+                }),
+            };
+            let response = response.unwrap_or_else(
+                |message| json!({"type": "error", "requestId": request_id, "message": message}),
+            );
+            hub.send(Event::MinifluxResponse(response)).ok();
+        }
+    });
+    Ok(sender)
+}
+
 pub fn entry_as_html(entry: &MinifluxEntry) -> String {
     fn escape(value: &str) -> String {
         value
@@ -111,7 +288,7 @@ pub struct Miniflux {
     id: Id,
     rect: Rectangle,
     children: Vec<Box<dyn View>>,
-    process: Option<Child>,
+    worker: Option<Sender<ApiCommand>>,
     categories: Vec<MinifluxCategory>,
     entries: Vec<MinifluxEntry>,
     category_id: Option<u64>,
@@ -140,7 +317,7 @@ impl Miniflux {
             id,
             rect,
             children: Vec::new(),
-            process: None,
+            worker: None,
             categories: Vec::new(),
             entries: Vec::new(),
             category_id: None,
@@ -166,13 +343,9 @@ impl Miniflux {
             return app;
         }
 
-        match app.spawn(hub) {
-            Ok(()) => {
-                app.send(json!({
-                    "type": "configure",
-                    "domain": settings.domain,
-                    "apiKey": settings.api_key,
-                }));
+        match spawn_api_worker(settings.domain.clone(), settings.api_key.clone(), hub) {
+            Ok(worker) => {
+                app.worker = Some(worker);
                 app.configured = true;
                 if context.online {
                     app.refresh();
@@ -187,59 +360,19 @@ impl Miniflux {
                 }
             }
             Err(message) => {
-                hub.send(Event::Notify(message)).ok();
+                hub.send(Event::Notify(format!(
+                    "Can't initialize Miniflux: {}.",
+                    message
+                )))
+                .ok();
             }
         }
         app
     }
 
-    fn spawn(&mut self, hub: &Hub) -> Result<(), String> {
-        let path = Path::new(APP_DIR)
-            .join(APP_NAME)
-            .canonicalize()
-            .map_err(|e| format!("Can't find Miniflux helper: {}.", e))?;
-        let mut process = Command::new(path)
-            .current_dir(APP_DIR)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Can't start Miniflux helper: {}.", e))?;
-        let stdout = process
-            .stdout
-            .take()
-            .ok_or_else(|| "Can't read Miniflux helper output.".to_string())?;
-        let hub = hub.clone();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                match line {
-                    Ok(line) => match serde_json::from_str::<JsonValue>(&line) {
-                        Ok(response) => {
-                            hub.send(Event::MinifluxResponse(response)).ok();
-                        }
-                        Err(err) => {
-                            hub.send(Event::Notify(format!(
-                                "Invalid Miniflux response: {}.",
-                                err
-                            )))
-                            .ok();
-                        }
-                    },
-                    Err(_) => break,
-                }
-            }
-        });
-        self.process = Some(process);
-        Ok(())
-    }
-
-    fn send(&mut self, command: JsonValue) {
-        if let Some(stdin) = self
-            .process
-            .as_mut()
-            .and_then(|process| process.stdin.as_mut())
-        {
-            writeln!(stdin, "{}", command).ok();
-            stdin.flush().ok();
+    fn send(&mut self, command: ApiCommand) {
+        if let Some(worker) = self.worker.as_ref() {
+            worker.send(command).ok();
         }
     }
 
@@ -255,7 +388,9 @@ impl Miniflux {
         }
         let categories_request = self.request_id();
         self.categories_request = Some(categories_request);
-        self.send(json!({"type": "listCategories", "requestId": categories_request}));
+        self.send(ApiCommand::ListCategories {
+            request_id: categories_request,
+        });
         self.request_entries();
     }
 
@@ -265,30 +400,31 @@ impl Miniflux {
         }
         let request_id = self.request_id();
         self.entries_request = Some(request_id);
-        self.send(json!({
-            "type": "listEntries",
-            "requestId": request_id,
-            "categoryId": self.category_id,
-            "offset": self.current_page * self.per_page,
-            "limit": self.per_page,
-        }));
+        self.send(ApiCommand::ListEntries {
+            request_id,
+            category_id: self.category_id,
+            offset: self.current_page * self.per_page,
+            limit: self.per_page,
+        });
     }
 
     fn request_entry(&mut self, entry_id: u64) {
         let request_id = self.request_id();
         self.entry_request = Some(request_id);
-        self.send(json!({"type": "getEntry", "requestId": request_id, "entryId": entry_id}));
+        self.send(ApiCommand::GetEntry {
+            request_id,
+            entry_id,
+        });
     }
 
     fn set_status(&mut self, entry_id: u64, status: MinifluxStatus) {
         let request_id = self.request_id();
         self.status_requests.insert(request_id, status);
-        self.send(json!({
-            "type": "setStatus",
-            "requestId": request_id,
-            "entryId": entry_id,
-            "status": status.as_str(),
-        }));
+        self.send(ApiCommand::SetStatus {
+            request_id,
+            entry_id,
+            status,
+        });
     }
 
     fn per_page(rect: Rectangle) -> usize {
@@ -511,15 +647,6 @@ impl Miniflux {
                     .ok();
             }
             _ => (),
-        }
-    }
-}
-
-impl Drop for Miniflux {
-    fn drop(&mut self) {
-        if let Some(mut process) = self.process.take() {
-            process.kill().ok();
-            process.wait().ok();
         }
     }
 }
@@ -845,6 +972,47 @@ impl View for MinifluxBottomBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn server(status: &str, body: &str) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let status = status.to_string();
+        let body = body.to_string();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0; 4096];
+            loop {
+                let count = stream.read(&mut buf).unwrap();
+                request.extend_from_slice(&buf[..count]);
+                let header_end = request.windows(4).position(|part| part == b"\r\n\r\n");
+                if count == 0 {
+                    break;
+                }
+                if let Some(header_end) = header_end {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .and_then(|value| value.parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+            }
+            write!(stream,
+                   "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                   status, body.len(), body).unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        (format!("http://{}", address), handle)
+    }
 
     #[test]
     fn wraps_entry_content_and_escapes_metadata() {
@@ -858,5 +1026,32 @@ mod tests {
         assert!(html.contains("<title>A &lt;title&gt;</title>"));
         assert!(html.contains("<p>Body</p>"));
         assert!(html.contains("a=1&amp;b=2"));
+    }
+
+    #[test]
+    fn lists_unread_entries_for_a_category() {
+        let (domain, request) = server("200 OK", r#"{"total":0,"entries":[]}"#);
+        let api = Api::new(format!("{}/", domain), "secret".to_string()).unwrap();
+        let result = api.entries(Some(42), 10, 5).unwrap();
+        assert_eq!(result["total"], 0);
+
+        let request = request.join().unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("get /v1/entries?"));
+        assert!(request.contains("status=unread"));
+        assert!(request.contains("category_id=42"));
+        assert!(request.contains("offset=10"));
+        assert!(request.contains("limit=5"));
+        assert!(request.contains("x-auth-token: secret"));
+    }
+
+    #[test]
+    fn updates_entry_status() {
+        let (domain, request) = server("204 No Content", "");
+        let api = Api::new(domain, "secret".to_string()).unwrap();
+        api.set_status(123, MinifluxStatus::Unread).unwrap();
+
+        let request = request.join().unwrap();
+        assert!(request.starts_with("PUT /v1/entries "));
+        assert!(request.contains(r#"{"entry_ids":[123],"status":"unread"}"#));
     }
 }
