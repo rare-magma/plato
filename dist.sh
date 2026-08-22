@@ -1,6 +1,6 @@
 #! /bin/sh
 
-[ -d dist ] && rm -Rf dist
+[ -d dist ] && rm -Rf dist/*
 
 [ -d bin ] || ./download.sh 'bin/*'
 [ -d resources ] || ./download.sh 'resources/*'

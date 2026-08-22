@@ -1,0 +1,22 @@
+# copied from https://github.com/randomnoise/plato-in-container
+services:
+  plato-builder:
+    image: localhost/plato-builder
+    volumes:
+      - ./dist:/usr/src/plato/dist:z
+      - ./crates:/usr/src/plato/crates:ro,z
+
+  plato-emulator:
+    dockerfile: emulator.Dockerfile
+    devices:
+      - /dev/dri/card0
+    environment:
+      - DISPLAY=unix${DISPLAY}
+      - RUST_LOG=debug
+    network_mode: "host"
+    volumes:
+      - ~/.Xauthority:/root/.Xauthority
+      - /etc/localtime:/etc/localtime:ro
+      # WSLg reference: github.com/microsoft/wslg/blob/d14b392/samples/container/Containers.md
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ./crates:/usr/src/plato/crates:ro

@@ -21,11 +21,14 @@ use crate::view::{
 };
 use reqwest::blocking::{Client, Response};
 use reqwest::header::CONTENT_TYPE;
+use reqwest::Certificate;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
+use std::time::Duration;
 
 const AUTH_HEADER: &str = "X-Auth-Token";
 
@@ -126,12 +129,52 @@ struct Api {
     api_key: String,
 }
 
+fn error_chain(error: &dyn StdError) -> String {
+    let mut messages = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(error) = source {
+        messages.push(error.to_string());
+        source = error.source();
+    }
+    messages.dedup();
+    messages.join(": ")
+}
+
 impl Api {
     fn new(domain: String, api_key: String) -> Result<Api, String> {
-        let domain = domain.trim_end_matches('/').to_string();
+        // reqwest does not resolve relative URLs against a client base URL. A
+        // hostname-only value from Settings.toml therefore needs an explicit
+        // scheme before it is used to build API request URLs.
+        let domain = domain.trim().trim_end_matches('/');
+        let domain = if domain.contains("://") {
+            domain.to_string()
+        } else {
+            format!("https://{}", domain)
+        };
         eprintln!("[miniflux] Initializing API client for {}.", domain);
-        let client = Client::new();
-        eprintln!("[miniflux] API client initialized.");
+        let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
+            .iter()
+            .map(|der| Certificate::from_der(der.as_ref()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                let message = format!("can't load bundled TLS roots: {}", error_chain(&e));
+                eprintln!("[miniflux] {}.", message);
+                message
+            })?;
+        eprintln!(
+            "[miniflux] Loaded {} bundled Mozilla TLS roots.",
+            roots.len()
+        );
+        let client = Client::builder()
+            .timeout(Duration::from_secs(20))
+            .tls_certs_only(roots)
+            .build()
+            .map_err(|e| {
+                let message = format!("can't build HTTP client: {}", error_chain(&e));
+                eprintln!("[miniflux] {} (debug={:?}).", message, e);
+                message
+            })?;
+        eprintln!("[miniflux] API client initialized with bundled roots and a 20 second timeout.");
         Ok(Api {
             client,
             domain,
@@ -165,8 +208,8 @@ impl Api {
     }
 
     fn transport_error(operation: &str, error: reqwest::Error) -> String {
-        let message = format!("{} transport error: {}", operation, error);
-        eprintln!("[miniflux] {}.", message);
+        let message = format!("{} transport error: {}", operation, error_chain(&error));
+        eprintln!("[miniflux] {} (debug={:?}).", message, error);
         message
     }
 
@@ -1191,6 +1234,12 @@ mod tests {
         assert!(html.contains("<title>A &lt;title&gt;</title>"));
         assert!(html.contains("<p>Body</p>"));
         assert!(html.contains("a=1&amp;b=2"));
+    }
+
+    #[test]
+    fn adds_https_to_a_hostname_only_domain() {
+        let api = Api::new("feed.example.org/".to_string(), "secret".to_string()).unwrap();
+        assert_eq!(api.domain, "https://feed.example.org");
     }
 
     #[test]

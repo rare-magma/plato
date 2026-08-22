@@ -1134,6 +1134,7 @@ dependencies = [
  "toml",
  "unicode-normalization",
  "walkdir",
+ "webpki-root-certs",
  "xi-unicode",
  "zip",
 ]
