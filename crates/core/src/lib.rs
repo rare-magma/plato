@@ -1,5 +1,7 @@
 #[macro_use] pub mod geom;
 
+pub const BUILD_DATE: &str = env!("PLATO_BUILD_DATE");
+
 mod unit;
 pub mod color;
 pub mod device;

@@ -21,6 +21,7 @@ pub struct Dialog {
     children: Vec<Box<dyn View>>,
     view_id: ViewId,
     event: Option<Event>,
+    message_lines: usize,
     will_close: bool,
 }
 
@@ -39,11 +40,15 @@ impl Dialog {
         let max_message_width = width as i32 - 3 * padding;
         let max_button_width = width as i32 / 4;
         let button_height = 4 * x_height;
+        let message_lines = text.split('\n').count();
+        let message_width = text.split('\n')
+                              .map(|line| font.plan(line, Some(max_message_width), None).width)
+                              .max()
+                              .unwrap_or(0);
+        let message_height = button_height.max((font.ascender() - font.descender()) * message_lines as i32);
 
-        let plan = font.plan(&text, Some(max_message_width), None);
-
-        let dialog_width = plan.width.max(min_message_width) + 3 * padding;
-        let dialog_height = 2 * button_height + 3 * padding;
+        let dialog_width = message_width.max(min_message_width) + 3 * padding;
+        let dialog_height = message_height + button_height + 3 * padding;
 
         let dx = (width as i32 - dialog_width) / 2;
         let dy = (height as i32 - dialog_height) / 2;
@@ -53,7 +58,7 @@ impl Dialog {
         let rect_label = rect![rect.min.x + padding,
                                rect.min.y + padding,
                                rect.max.x - padding,
-                               rect.min.y + padding + button_height];
+                               rect.min.y + padding + message_height];
 
         let label = Label::new(rect_label, text, Align::Center);
 
@@ -86,6 +91,7 @@ impl Dialog {
             children,
             view_id,
             event,
+            message_lines,
             will_close: false,
         }
     }
@@ -141,16 +147,18 @@ impl View for Dialog {
         let dialog_height = self.rect.height() as i32;
         let max_button_width = width as i32 / 4;
 
-        let (x_height, padding, button_width) = {
+        let (x_height, padding, button_width, line_height) = {
             let font = font_from_style(&mut context.fonts, &NORMAL_STYLE, dpi);
             let plan_cancel = self.event.as_ref().map(|_| font.plan(LABEL_CANCEL, Some(max_button_width), None));
             let plan_validate = font.plan(LABEL_VALIDATE, Some(max_button_width), None);
             let x_height = font.x_heights.0 as i32;
             let padding = font.em() as i32;
             let button_width = plan_validate.width.max(plan_cancel.map_or(0, |p| p.width)) as i32 + padding;
-            (x_height, padding, button_width)
+            let line_height = font.ascender() - font.descender();
+            (x_height, padding, button_width, line_height)
         };
         let button_height = 4 * x_height;
+        let message_height = button_height.max(line_height * self.message_lines as i32);
 
         let dx = (width as i32 - dialog_width) / 2;
         let dy = (height as i32 - dialog_height) / 2;
@@ -160,7 +168,7 @@ impl View for Dialog {
         let label_rect = rect![rect.min.x + padding,
                                rect.min.y + padding,
                                rect.max.x - padding,
-                               rect.min.y + padding + button_height];
+                               rect.min.y + padding + message_height];
         self.children[0].resize(label_rect, hub, rq, context);
 
         let mut index = 1;

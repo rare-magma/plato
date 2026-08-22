@@ -762,7 +762,7 @@ pub fn run() -> Result<(), Error> {
             Event::Select(EntryId::About) => {
                 let dialog = Dialog::new(ViewId::AboutDialog,
                                          None,
-                                         format!("Plato {}", env!("CARGO_PKG_VERSION")),
+                                         format!("Plato {}\nBuild date: {}", env!("CARGO_PKG_VERSION"), plato_core::BUILD_DATE),
                                          &mut context);
                 rq.add(RenderData::new(dialog.id(), *dialog.rect(), UpdateMode::Gui));
                 view.children_mut().push(Box::new(dialog) as Box<dyn View>);

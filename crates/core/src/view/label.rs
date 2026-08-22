@@ -77,13 +77,30 @@ impl View for Label {
         let padding = font.em() as i32;
         let max_width = self.rect.width() as i32 - padding;
 
-        let plan = font.plan(&self.text, Some(max_width), None);
+        let plans: Vec<_> = self.text.split('\n')
+                                      .map(|line| font.plan(line, Some(max_width), None))
+                                      .collect();
 
-        let dx = self.align.offset(plan.width, self.rect.width() as i32);
-        let dy = (self.rect.height() as i32 - x_height) / 2;
-        let pt = pt!(self.rect.min.x + dx, self.rect.max.y - dy);
+        if plans.len() == 1 {
+            let plan = &plans[0];
+            let dx = self.align.offset(plan.width, self.rect.width() as i32);
+            let dy = (self.rect.height() as i32 - x_height) / 2;
+            let pt = pt!(self.rect.min.x + dx, self.rect.max.y - dy);
+            font.render(fb, TEXT_NORMAL[1], plan, pt);
+        } else {
+            let line_height = font.ascender() - font.descender();
+            let total_height = line_height * plans.len() as i32;
+            let first_baseline = self.rect.min.y
+                              + (self.rect.height() as i32 - total_height) / 2
+                              + font.ascender();
 
-        font.render(fb, TEXT_NORMAL[1], &plan, pt);
+            for (index, plan) in plans.iter().enumerate() {
+                let dx = self.align.offset(plan.width, self.rect.width() as i32);
+                let baseline = first_baseline + index as i32 * line_height;
+                font.render(fb, TEXT_NORMAL[1], plan,
+                            pt!(self.rect.min.x + dx, baseline));
+            }
+        }
     }
 
     fn resize(&mut self, rect: Rectangle, _hub: &Hub, _rq: &mut RenderQueue, _context: &mut Context) {

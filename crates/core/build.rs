@@ -1,6 +1,9 @@
 use std::env;
+use chrono::Utc;
 
 fn main() {
+    println!("cargo:rustc-env=PLATO_BUILD_DATE={}", Utc::now().format("%Y-%m-%d %H:%M:%S"));
+
     let target = env::var("TARGET").unwrap();
 
     // Cross-compiling for Kobo.
