@@ -80,6 +80,20 @@ impl HtmlDocument {
         let size = text.len();
         let mut content = XmlParser::new(text).parse();
         content.wrap_lost_inlines();
+        let has_html = content.root().find("html").is_some();
+        let has_head = content.root().find("head").is_some();
+        let has_body = content.root().find("body").is_some();
+        let (direct_head, direct_body) = content.root().find("html").map_or((false, false), |html| {
+            (html.children().any(|child| child.tag_name() == Some("head")),
+             html.children().any(|child| child.tag_name() == Some("body")))
+        });
+        let has_title = content.root().find("head").map_or(false, |head| {
+            head.children().any(|child| child.tag_name() == Some("title"))
+        });
+        if !(has_html && has_head && has_body && direct_head && direct_body && has_title) {
+            eprintln!("[html] ERROR: In-memory HTML tree is incomplete (bytes={}, html={}, head={}, body={}, direct_head={}, direct_body={}, direct_title={}).",
+                      size, has_html, has_head, has_body, direct_head, direct_body, has_title);
+        }
 
         HtmlDocument {
             text: text.to_string(),
@@ -238,6 +252,23 @@ impl HtmlDocument {
 
         pages.retain(|page| !page.is_empty());
 
+        let (text_commands, image_commands, marker_commands) = pages.iter().flatten().fold(
+            (0, 0, 0),
+            |(text, images, markers), command| match command {
+                DrawCommand::Text(_) | DrawCommand::ExtraText(_) => (text + 1, images, markers),
+                DrawCommand::Image(_) => (text, images + 1, markers),
+                DrawCommand::Marker(_) => (text, images, markers + 1),
+            },
+        );
+        let text_bytes: usize = pages.iter().flatten().map(|command| match command {
+            DrawCommand::Text(command) | DrawCommand::ExtraText(command) => command.text.len(),
+            _ => 0,
+        }).sum();
+        if text_commands == 0 && image_commands == 0 {
+            eprintln!("[html] ERROR: Parsed document has no drawable text or images (bytes={}, pages={}, text_commands={}, text_bytes={}, image_commands={}, marker_commands={}, title={:?}).",
+                      self.size, pages.len(), text_commands, text_bytes, image_commands, marker_commands, self.title());
+        }
+
         if pages.is_empty() {
             pages.push(vec![DrawCommand::Marker(self.content.root().offset())]);
         }
@@ -373,12 +404,32 @@ impl Document for HtmlDocument {
     }
 
     fn pixmap(&mut self, loc: Location, scale: f32, samples: usize) -> Option<(Pixmap, usize)> {
-        let offset = self.resolve_location(loc)?;
-        let page_index = self.page_index(offset)?;
+        let requested_location = loc.clone();
+        let offset = match self.resolve_location(loc) {
+            Some(offset) => offset,
+            None => {
+                eprintln!("[html] ERROR: Couldn't resolve HTML location {:?} (scale={}, samples={}, bytes={}).",
+                          requested_location, scale, samples, self.size);
+                return None;
+            },
+        };
+        let page_index = match self.page_index(offset) {
+            Some(page_index) => page_index,
+            None => {
+                eprintln!("[html] ERROR: Couldn't map HTML offset {} to a page (bytes={}).",
+                          offset, self.size);
+                return None;
+            },
+        };
         let page = self.pages[page_index].clone();
-        let pixmap = self.engine.render_page(&page, scale, samples, &mut self.parent)?;
-
-        Some((pixmap, offset))
+        match self.engine.render_page(&page, scale, samples, &mut self.parent) {
+            Some(pixmap) => Some((pixmap, offset)),
+            None => {
+                eprintln!("[html] ERROR: HTML renderer returned no pixmap (page_index={}, offset={}, scale={}, bytes={}).",
+                          page_index, offset, scale, self.size);
+                None
+            },
+        }
     }
 
     fn layout(&mut self, width: u32, height: u32, font_size: f32, dpi: u16) {

@@ -374,6 +374,13 @@ pub fn entry_as_html(entry: &MinifluxEntry) -> String {
             .replace('"', "&quot;")
     }
 
+    if entry.title.trim().is_empty() {
+        eprintln!("[miniflux] Entry {} has an empty title.", entry.id);
+    }
+    if entry.content.trim().is_empty() {
+        eprintln!("[miniflux] Entry {} has empty HTML content.", entry.id);
+    }
+
     let title = escape(&entry.title);
     let author = escape(&entry.author);
     let feed = escape(&entry.feed.title);
@@ -389,7 +396,9 @@ pub fn entry_as_html(entry: &MinifluxEntry) -> String {
     } else {
         format!("<p><a href=\"{}\">Open original article</a></p>", url)
     };
-    format!("<!doctype html><html><head><meta charset=\"utf-8\"><title>{}</title></head><body><h1>{}</h1><p><em>{}</em></p>{}{}</body></html>",
+    // Plato's HTML parser is XML-like and requires void elements to be
+    // self-closing; otherwise <meta> consumes the rest of the document.
+    format!("<!doctype html><html><head><meta charset=\"utf-8\"/><title>{}</title></head><body><h1>{}</h1><p><em>{}</em></p>{}{}</body></html>",
             title, title, byline, entry.content, source)
 }
 
@@ -461,11 +470,11 @@ impl Miniflux {
                 eprintln!("[miniflux] API worker initialized.");
                 app.worker = Some(worker);
                 app.configured = true;
+                app.refresh();
                 if context.online {
                     eprintln!("[miniflux] Network is online; requesting initial data.");
-                    app.refresh();
                 } else {
-                    eprintln!("[miniflux] Network is offline; waiting for NetUp event.");
+                    eprintln!("[miniflux] Network is offline; initial request queued and waiting for NetUp retry.");
                     hub.send(Event::Notify(
                         "Waiting for a network connection.".to_string(),
                     ))
@@ -1232,8 +1241,12 @@ mod tests {
         };
         let html = entry_as_html(&entry);
         assert!(html.contains("<title>A &lt;title&gt;</title>"));
+        assert!(html.contains("<meta charset=\"utf-8\"/>"));
         assert!(html.contains("<p>Body</p>"));
         assert!(html.contains("a=1&amp;b=2"));
+
+        let document = crate::document::html::HtmlDocument::new_from_memory(&html);
+        assert_eq!(document.title().as_deref(), Some("A <title>"));
     }
 
     #[test]

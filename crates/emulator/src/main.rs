@@ -230,6 +230,18 @@ impl Framebuffer for FBCanvas {
 }
 
 fn main() -> Result<(), Error> {
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("[emulator] PANIC: {}", info);
+    }));
+
+    if let Err(error) = run() {
+        eprintln!("[emulator] Fatal error: {:#}", error);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn run() -> Result<(), Error> {
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
     let (width, height) = CURRENT_DEVICE.dims;

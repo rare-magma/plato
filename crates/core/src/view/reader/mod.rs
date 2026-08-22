@@ -413,7 +413,11 @@ impl Reader {
         let font_size = context.settings.reader.font_size;
         doc.layout(width, height, font_size, CURRENT_DEVICE.dpi);
         let pages_count = doc.pages_count();
-        info.title = doc.title().unwrap_or_default();
+        let title = doc.title();
+        if title.as_ref().map_or(true, |title| title.trim().is_empty()) {
+            eprintln!("[reader] In-memory HTML document has no usable <title> (bytes={}).", html.len());
+        }
+        info.title = title.unwrap_or_default();
 
         let mut current_page = 0;
         if let Some(link_uri) = link_uri {
@@ -427,7 +431,9 @@ impl Reader {
             }
         }
 
-        hub.send(Event::Update(UpdateMode::Partial)).ok();
+        if hub.send(Event::Update(UpdateMode::Partial)).is_err() {
+            eprintln!("[reader] Can't schedule the initial render for the in-memory HTML document.");
+        }
 
         Reader {
             id,
@@ -481,6 +487,8 @@ impl Reader {
                               ((1.0 - cropping_margin.bottom) * pixmap.height as f32).floor() as i32];
             self.cache.insert(location, Resource { pixmap, frame, scale });
         } else {
+            eprintln!("[reader] ERROR: Can't render page (reader_id={}, page={}, source={}, dims={:?}, scale={}); using a blank fallback.",
+                      self.id, location, self.info.file.path.display(), dims, scale);
             let width = (dims.0 as f32 * scale).max(1.0) as u32;
             let height = (dims.1 as f32 * scale).max(1.0) as u32;
             let pixmap = Pixmap::empty(width, height, CURRENT_DEVICE.color_samples());
@@ -496,9 +504,14 @@ impl Reader {
 
         let mut doc = self.doc.lock().unwrap();
         let loc = Location::Exact(location);
-        let words = doc.words(loc)
-                       .map(|(words, _)| words)
-                       .unwrap_or_default();
+        let words = match doc.words(loc) {
+            Some((words, _)) => words,
+            None => {
+                eprintln!("[reader] No text could be loaded for page {} (title={:?}, source={}).",
+                          location, self.info.title(), self.info.file.path.display());
+                Vec::new()
+            },
+        };
         self.text.insert(location, words);
     }
 
@@ -731,6 +744,7 @@ impl Reader {
 
     fn go_to_neighbor(&mut self, dir: CycleDir, hub: &Hub, rq: &mut RenderQueue, context: &mut Context) {
         if self.chunks.is_empty() {
+            eprintln!("[reader] ERROR: Ignoring page navigation because there are no render chunks (reader_id={}).", self.id);
             return;
         }
 
@@ -1132,9 +1146,16 @@ impl Reader {
             },
         }
 
-        rq.add(RenderData::new(self.id, self.rect, update_mode));
+        if self.chunks.is_empty() {
+            eprintln!("[reader] ERROR: Reader update produced no render chunks (reader_id={}, source={}, title={:?}, current_page={}).",
+                      self.id, self.info.file.path.display(), self.info.title(), self.current_page);
+            rq.add(RenderData::new(self.id, self.rect, update_mode));
+            return;
+        }
+
         let first_location = self.chunks.first().map(|c| c.location).unwrap();
         let last_location = self.chunks.last().map(|c| c.location).unwrap();
+        rq.add(RenderData::new(self.id, self.rect, update_mode));
 
         while self.cache.len() > 3 {
             let left_count = self.cache.range(..first_location).count();
