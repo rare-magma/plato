@@ -306,6 +306,8 @@ pub enum Event {
     MinifluxResponse(serde_json::Value),
     HackerNewsOpen(String),
     HackerNewsResponse(HnResponse),
+    HackerNewsToggleComment(String),
+    HackerNewsThreadUpdated { html: String, link_uri: String },
     MinifluxSetStatus(u64, MinifluxStatus),
     MinifluxSetStatusQuiet(u64, MinifluxStatus),
     ToggleMinifluxEntryMenu(Rectangle, u64),

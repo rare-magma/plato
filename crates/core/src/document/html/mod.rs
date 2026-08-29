@@ -437,6 +437,10 @@ impl Document for HtmlDocument {
         self.pages.clear();
     }
 
+    fn update(&mut self, text: &str) {
+        HtmlDocument::update(self, text);
+    }
+
     fn set_text_align(&mut self, text_align: TextAlign) {
         self.engine.set_text_align(text_align);
         self.pages.clear();

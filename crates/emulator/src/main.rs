@@ -603,7 +603,8 @@ fn run() -> Result<(), Error> {
                         home.handle_event(&evt, &tx, &mut VecDeque::new(), &mut RenderQueue::new(), &mut context);
                     }
                 },
-                Event::HackerNewsResponse(..) if !view.is::<Hn>() => {
+                Event::HackerNewsResponse(..) |
+                Event::HackerNewsToggleComment(..) if !view.is::<Hn>() => {
                     if let Some(hn) = history.iter_mut().rev().find(|view| view.is::<Hn>()) {
                         hn.handle_event(&evt, &tx, &mut VecDeque::new(), &mut rq, &mut context);
                     } else {

@@ -965,7 +965,8 @@ pub fn run() -> Result<(), Error> {
                 let notif = Notification::new(msg, &tx, &mut rq, &mut context);
                 view.children_mut().push(Box::new(notif) as Box<dyn View>);
             },
-            Event::HackerNewsResponse(..) if !view.is::<Hn>() => {
+            Event::HackerNewsResponse(..) |
+            Event::HackerNewsToggleComment(..) if !view.is::<Hn>() => {
                 if let Some(entry) = history.iter_mut().rev().find(|entry| entry.view.is::<Hn>()) {
                     entry.view.handle_event(&evt, &tx, &mut VecDeque::new(), &mut rq, &mut context);
                 } else {

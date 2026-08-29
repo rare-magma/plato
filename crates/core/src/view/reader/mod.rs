@@ -467,6 +467,78 @@ impl Reader {
         }
     }
 
+    fn update_html(
+        &mut self,
+        html: &str,
+        link_uri: &str,
+        hub: &Hub,
+        rq: &mut RenderQueue,
+        context: &mut Context,
+    ) {
+        if !self.ephemeral {
+            return;
+        }
+
+        let (current_page, title, pages_count) = {
+            let mut doc = self.doc.lock().unwrap();
+            doc.update(html);
+            let (width, height) = context.display.dims;
+            let font_size = self
+                .info
+                .reader
+                .as_ref()
+                .and_then(|reader| reader.font_size)
+                .unwrap_or(context.settings.reader.font_size);
+            doc.layout(width, height, font_size, CURRENT_DEVICE.dpi);
+
+            let mut location = Location::Exact(0);
+            let mut current_page = None;
+            while let Some((links, offset)) = doc.links(location.clone()) {
+                if links.iter().any(|link| link.text == link_uri) {
+                    current_page = Some(offset);
+                    break;
+                }
+                location = Location::Next(offset);
+            }
+            (
+                current_page.unwrap_or(0),
+                doc.title().unwrap_or_default(),
+                doc.pages_count(),
+            )
+        };
+
+        self.info.title = title;
+        self.info.file.size = html.len() as u64;
+        if let Some(reader) = self.info.reader.as_mut() {
+            reader.annotations.clear();
+            reader.bookmarks.clear();
+        }
+        self.cache.clear();
+        self.chunks.clear();
+        self.text.clear();
+        self.annotations.clear();
+        self.noninverted_regions.clear();
+        self.selection = None;
+        self.target_annotation = None;
+        self.history.clear();
+        self.state = State::Idle;
+        self.search = None;
+        self.current_page = current_page;
+        self.pages_count = pages_count;
+        self.view_port.page_offset = pt!(0);
+        self.page_turns = 0;
+
+        let title = self.info.title.clone();
+        if let Some(index) = locate::<TopBar>(self) {
+            if let Some(top_bar) = self.child_mut(index).downcast_mut::<TopBar>() {
+                top_bar.update_title_label(&title, rq);
+            }
+        }
+        self.update(Some(UpdateMode::Gui), hub, rq, context);
+        self.update_bottom_bar(rq);
+        self.update_tool_bar(rq, context);
+    }
+
     fn load_pixmap(&mut self, location: usize) {
         if self.cache.contains_key(&location) {
             return;
@@ -3134,6 +3206,19 @@ impl View for Reader {
                 }
 
                 if let Some(link) = nearest_link.take() {
+                    // HN uses a private URI for folding; ordinary links keep their normal behavior.
+                    if let Some(comment_key) = link
+                        .text
+                        .strip_prefix(crate::view::hn::COMMENT_COLLAPSE_PREFIX)
+                    {
+                        if !comment_key.is_empty() {
+                            hub.send(Event::HackerNewsToggleComment(
+                                link.text.clone(),
+                            ))
+                            .ok();
+                        }
+                        return true;
+                    }
                     let pdf_page = Regex::new(r"^#page=(\d+).*$").unwrap();
                     let djvu_page = Regex::new(r"^#([+-])?(\d+)$").unwrap();
                     let toc_page = Regex::new(r"^@(.+)$").unwrap();
@@ -3360,6 +3445,13 @@ impl View for Reader {
                 }
                 self.selection = None;
                 self.state = State::Idle;
+                true
+            },
+            Event::HackerNewsThreadUpdated {
+                ref html,
+                ref link_uri,
+            } => {
+                self.update_html(html, link_uri, hub, rq, context);
                 true
             },
             Event::Update(mode) => {

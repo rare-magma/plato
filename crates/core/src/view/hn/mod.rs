@@ -1,4 +1,4 @@
-use crate::color::{BLACK, TEXT_INVERTED_HARD, TEXT_NORMAL, WHITE};
+use crate::color::{BLACK, SEPARATOR_NORMAL, TEXT_INVERTED_HARD, TEXT_NORMAL, WHITE};
 use crate::context::Context;
 use crate::device::CURRENT_DEVICE;
 use crate::document::html::dom::NodeData;
@@ -26,14 +26,17 @@ use reqwest::Certificate;
 use serde::de::{DeserializeOwned, Deserializer};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
+use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 
 pub const ALGOLIA_HN_API: &str = "https://hn.algolia.com";
+pub const COMMENT_COLLAPSE_PREFIX: &str = "hn-collapse:";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_COMMENT_INDENT: usize = 6;
+const MAX_STORIES: usize = 50;
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub enum TimeWindow {
@@ -682,7 +685,43 @@ fn count_comments(children: &[HnItem]) -> usize {
         .sum()
 }
 
-fn append_comment(item: &HnItem, depth: usize, now: i64, output: &mut String) {
+fn comment_key(path: &[usize]) -> String {
+    let path = path
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(".");
+    format!("{}{}", COMMENT_COLLAPSE_PREFIX, path)
+}
+
+fn parse_comment_key(key: &str) -> Option<Vec<usize>> {
+    let path = key.strip_prefix(COMMENT_COLLAPSE_PREFIX)?;
+    if path.is_empty() {
+        return None;
+    }
+    path.split('.')
+        .map(|part| (!part.is_empty()).then(|| part.parse().ok()).flatten())
+        .collect()
+}
+
+fn comment_at_path<'a>(children: &'a [HnItem], path: &[usize]) -> Option<&'a HnItem> {
+    let (&index, rest) = path.split_first()?;
+    let comment = children.get(index)?;
+    if rest.is_empty() {
+        Some(comment)
+    } else {
+        comment_at_path(&comment.children, rest)
+    }
+}
+
+fn append_comment(
+    item: &HnItem,
+    depth: usize,
+    now: i64,
+    path: &[usize],
+    collapsed_comments: &HashSet<String>,
+    output: &mut String,
+) {
     let body = sanitize_fragment(&item.text);
     let has_children = !item.children.is_empty();
     let deleted =
@@ -698,11 +737,45 @@ fn append_comment(item: &HnItem, depth: usize, now: i64, output: &mut String) {
         } else {
             item.author.as_str()
         };
-        output.push_str("<p><em>");
-        output.push_str(&escape_text(author));
-        output.push_str(" · ");
-        output.push_str(&escape_text(&relative_age(now, item.created_at_i)));
-        output.push_str("</em></p>");
+        let key = comment_key(path);
+        let collapsed = collapsed_comments.contains(&key);
+        let marker = if has_children {
+            if collapsed { "[+] " } else { "[-] " }
+        } else {
+            ""
+        };
+        let header = format!(
+            "{}{} · {}{}",
+            marker,
+            author,
+            relative_age(now, item.created_at_i),
+            if has_children {
+                let replies = item.children.len();
+                format!(
+                    " · {} {}",
+                    replies,
+                    if replies == 1 { "reply" } else { "replies" }
+                )
+            } else {
+                String::new()
+            }
+        );
+        output.push_str("<p>");
+        // Reader has no script engine; the private link becomes a fold event.
+        if has_children {
+            output.push_str("<a href=\"");
+            output.push_str(&escape_attribute(&key));
+            output.push_str("\"><em>");
+        } else {
+            output.push_str("<em>");
+        }
+        output.push_str(&escape_text(&header));
+        if has_children {
+            output.push_str("</em></a>");
+        } else {
+            output.push_str("</em>");
+        }
+        output.push_str("</p>");
         if body.trim().is_empty() {
             output.push_str("<p>");
             output.push_str(if deleted {
@@ -715,13 +788,26 @@ fn append_comment(item: &HnItem, depth: usize, now: i64, output: &mut String) {
             output.push_str(&body);
         }
         output.push_str("</div>");
+
+        if collapsed {
+            return;
+        }
     }
-    for child in &item.children {
-        append_comment(child, depth.saturating_add(1), now, output);
+    for (index, child) in item.children.iter().enumerate() {
+        let mut child_path = path.to_vec();
+        child_path.push(index);
+        append_comment(
+            child,
+            depth.saturating_add(1),
+            now,
+            &child_path,
+            collapsed_comments,
+            output,
+        );
     }
 }
 
-pub fn item_as_html(item: &HnItem) -> String {
+fn item_as_html_with_collapsed(item: &HnItem, collapsed_comments: &HashSet<String>) -> String {
     let title = if item.title.trim().is_empty() {
         "Hacker News story"
     } else {
@@ -766,11 +852,31 @@ pub fn item_as_html(item: &HnItem) -> String {
         html.push_str("\">Open original article</a></p>");
     }
     html.push_str("<section class=\"hn-comments\">");
-    for child in &item.children {
-        append_comment(child, 0, now, &mut html);
+    for (index, child) in item.children.iter().enumerate() {
+        append_comment(
+            child,
+            0,
+            now,
+            &[index],
+            collapsed_comments,
+            &mut html,
+        );
     }
     html.push_str("</section></body></html>");
     html
+}
+
+pub fn item_as_html(item: &HnItem) -> String {
+    item_as_html_with_collapsed(item, &HashSet::new())
+}
+
+fn capped_page_count(total_hits: usize, reported_pages: usize, hits_per_page: usize) -> usize {
+    let hits_per_page = hits_per_page.max(1);
+    let maximum = total_hits
+        .min(MAX_STORIES)
+        .saturating_add(hits_per_page - 1)
+        / hits_per_page;
+    reported_pages.max(1).min(maximum.max(1))
 }
 
 fn count_label(count: u64, noun: &str) -> String {
@@ -810,6 +916,8 @@ pub struct Hn {
     list_request: Option<ListRequest>,
     item_request: Option<ItemRequest>,
     active_story_id: Option<String>,
+    thread_item: Option<HnItem>,
+    collapsed_comments: HashSet<String>,
     loading: bool,
     error: Option<String>,
     configured: bool,
@@ -832,6 +940,8 @@ impl Hn {
             list_request: None,
             item_request: None,
             active_story_id: None,
+            thread_item: None,
+            collapsed_comments: HashSet::new(),
             loading: false,
             error: None,
             configured: false,
@@ -922,6 +1032,8 @@ impl Hn {
             self.pages_count = 1;
             self.item_request = None;
             self.active_story_id = None;
+            self.thread_item = None;
+            self.collapsed_comments.clear();
         }
         if !self.configured {
             self.loading = false;
@@ -971,6 +1083,30 @@ impl Hn {
             self.item_request = None;
             self.active_story_id = None;
             self.error = Some("Hacker News worker is unavailable.".to_string());
+        }
+    }
+
+    fn toggle_comment(&mut self, key: &str, hub: &Hub) {
+        let Some(path) = parse_comment_key(key) else {
+            return;
+        };
+        let has_children = self
+            .thread_item
+            .as_ref()
+            .and_then(|item| comment_at_path(&item.children, &path))
+            .is_some_and(|comment| !comment.children.is_empty());
+        if !has_children {
+            return;
+        }
+        if !self.collapsed_comments.remove(key) {
+            self.collapsed_comments.insert(key.to_string());
+        }
+        if let Some(item) = self.thread_item.as_ref() {
+            hub.send(Event::HackerNewsThreadUpdated {
+                html: item_as_html_with_collapsed(item, &self.collapsed_comments),
+                link_uri: key.to_string(),
+            })
+            .ok();
         }
     }
 
@@ -1057,14 +1193,26 @@ impl Hn {
                 }
                 self.list_request = None;
                 self.loading = false;
-                self.total_hits = result.nb_hits;
-                self.pages_count = result.nb_pages.max(1);
+                self.total_hits = result.nb_hits.min(MAX_STORIES);
+                self.pages_count = capped_page_count(
+                    self.total_hits,
+                    result.nb_pages,
+                    self.hits_per_page,
+                );
                 if self.current_page >= self.pages_count {
                     self.current_page = self.pages_count - 1;
                     self.request_list(true);
                     self.rebuild(rq, context);
                     return;
                 }
+                let page_start = request.page.saturating_mul(self.hits_per_page);
+                let page_limit = if self.total_hits == 0 {
+                    result.hits.len().min(MAX_STORIES).min(self.hits_per_page)
+                } else {
+                    self.total_hits
+                        .saturating_sub(page_start)
+                        .min(self.hits_per_page)
+                };
                 self.stories = result
                     .hits
                     .iter()
@@ -1078,7 +1226,7 @@ impl Hn {
                         story.object_id = id.to_string();
                         Some(story)
                     })
-                    .take(self.hits_per_page)
+                    .take(page_limit)
                     .collect();
                 self.error = None;
                 self.rebuild(rq, context);
@@ -1116,6 +1264,8 @@ impl Hn {
                 }
                 self.item_request = None;
                 self.active_story_id = None;
+                self.thread_item = Some(item.clone());
+                self.collapsed_comments.clear();
                 self.error = None;
                 self.rebuild(rq, context);
                 hub.send(Event::OpenHtml(item_as_html(item), None)).ok();
@@ -1215,18 +1365,34 @@ impl Hn {
         } else {
             let heights =
                 crate::geom::divide(content_rect.height() as i32, self.hits_per_page as i32);
+            let thickness = scale_by_dpi(THICKNESS_MEDIUM, dpi) as i32;
+            let (small_thickness, big_thickness) = halves(thickness);
             let mut y = content_rect.min.y;
             for (index, story) in self.stories.iter().cloned().enumerate() {
                 let height = heights.get(index).copied().unwrap_or_default();
+                let has_next = index + 1 < self.stories.len();
+                let row_min = y + if index > 0 { big_thickness } else { 0 };
+                let row_max = y + height - if has_next { small_thickness } else { 0 };
                 let active = self.active_story_id.as_deref() == Some(story.object_id.as_str());
                 let loading = active && self.item_request.is_some();
                 self.children.push(Box::new(HnStoryRow::new(
-                    rect![content_rect.min.x, y, content_rect.max.x, y + height],
+                    rect![content_rect.min.x, row_min, content_rect.max.x, row_max],
                     story,
                     active,
                     loading,
                     self.loading,
                 )));
+                if has_next {
+                    self.children.push(Box::new(Filler::new(
+                        rect![
+                            content_rect.min.x,
+                            row_max,
+                            content_rect.max.x,
+                            row_max + thickness
+                        ],
+                        SEPARATOR_NORMAL,
+                    )));
+                }
                 y += height;
             }
             if y < content_rect.max.y {
@@ -1290,6 +1456,10 @@ impl View for Hn {
                     self.request_item(story_id.clone());
                     self.rebuild(rq, context);
                 }
+                true
+            }
+            Event::HackerNewsToggleComment(key) => {
+                self.toggle_comment(key, hub);
                 true
             }
             Event::Select(EntryId::HackerNewsWindow(window)) => {
@@ -1827,6 +1997,50 @@ mod tests {
     }
 
     #[test]
+    fn story_pages_are_capped_at_fifty_results() {
+        assert_eq!(capped_page_count(0, 20, 7), 1);
+        assert_eq!(capped_page_count(50, 20, 7), 8);
+        assert_eq!(capped_page_count(500, 20, 7), 8);
+        assert_eq!(capped_page_count(50, 3, 50), 1);
+    }
+
+    #[test]
+    fn comment_fold_links_hide_only_the_selected_subtree() {
+        let item = HnItem {
+            children: vec![
+                HnItem {
+                    author: "top".to_string(),
+                    text: "top body".to_string(),
+                    children: vec![HnItem {
+                        author: "reply".to_string(),
+                        text: "reply body".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                HnItem {
+                    author: "sibling".to_string(),
+                    text: "sibling body".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let key = comment_key(&[0]);
+        let open = item_as_html(&item);
+        assert!(open.contains("href=\"hn-collapse:0\""));
+        assert!(open.contains("reply body"));
+
+        let mut collapsed = HashSet::new();
+        collapsed.insert(key);
+        let folded = item_as_html_with_collapsed(&item, &collapsed);
+        assert!(folded.contains("top body"));
+        assert!(folded.contains("sibling body"));
+        assert!(!folded.contains("reply body"));
+        assert!(folded.contains("[+] top"));
+    }
+
+    #[test]
     fn html_escapes_metadata_sanitizes_content_and_clamps_depth() {
         let mut deep = HnItem {
             id: "1".to_string(),
@@ -1852,7 +2066,7 @@ mod tests {
         assert!(html.contains("Open original article"));
         assert!(html.contains("margin-left: 6em"));
         assert!(!html.contains("vote"));
-        assert!(!html.contains("reply"));
+        assert!(!html.contains("reply to"));
         let document = crate::document::html::HtmlDocument::new_from_memory(&html);
         assert_eq!(document.title().as_deref(), Some("A <story> & \"title\""));
     }
