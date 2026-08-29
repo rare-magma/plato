@@ -87,6 +87,8 @@ pub fn toggle_main_menu(view: &mut dyn View, rect: Rectangle, enable: Option<boo
                                            EntryId::Launch(AppCmd::Sketch)),
                         EntryKind::Command("Miniflux".to_string(),
                                            EntryId::Launch(AppCmd::Miniflux)),
+                        EntryKind::Command("Hacker News".to_string(),
+                                           EntryId::Launch(AppCmd::HackerNews)),
                         EntryKind::Separator,
                         EntryKind::Command("Touch Events".to_string(),
                                            EntryId::Launch(AppCmd::TouchEvents)),

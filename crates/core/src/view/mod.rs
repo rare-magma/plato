@@ -43,6 +43,7 @@ pub mod sketch;
 pub mod touch_events;
 pub mod rotation_values;
 pub mod miniflux;
+pub mod hn;
 
 use std::ops::{Deref, DerefMut};
 use std::time::{Instant, Duration};
@@ -66,6 +67,7 @@ use self::calculator::LineOrigin;
 use self::key::KeyKind;
 use crate::context::Context;
 use self::miniflux::{MinifluxEntry, MinifluxStatus};
+use self::hn::{HnResponse, TimeWindow};
 
 // Border thicknesses in pixels, at 300 DPI.
 pub const THICKNESS_SMALL: f32 = 1.0;
@@ -302,6 +304,8 @@ pub enum Event {
     OpenMinifluxEntry(Box<MinifluxEntry>),
     MinifluxOpen(u64),
     MinifluxResponse(serde_json::Value),
+    HackerNewsOpen(String),
+    HackerNewsResponse(HnResponse),
     MinifluxSetStatus(u64, MinifluxStatus),
     MinifluxSetStatusQuiet(u64, MinifluxStatus),
     ToggleMinifluxEntryMenu(Rectangle, u64),
@@ -385,6 +389,7 @@ pub enum AppCmd {
     TouchEvents,
     RotationValues,
     Miniflux,
+    HackerNews,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -405,6 +410,7 @@ pub enum ViewId {
     Dictionary,
     Miniflux,
     MinifluxEntryMenu,
+    HackerNews,
     FontSizeMenu,
     TextAlignMenu,
     FontFamilyMenu,
@@ -581,6 +587,8 @@ pub enum EntryId {
     Launch(AppCmd),
     MinifluxCategory(Option<u64>),
     MinifluxRefresh,
+    HackerNewsWindow(TimeWindow),
+    HackerNewsRefresh,
     MinifluxMarkRead(u64),
     MinifluxMarkUnread(u64),
     SetPenSize(i32),

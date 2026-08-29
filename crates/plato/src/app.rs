@@ -21,6 +21,7 @@ use plato_core::view::sketch::Sketch;
 use plato_core::view::touch_events::TouchEvents;
 use plato_core::view::rotation_values::RotationValues;
 use plato_core::view::miniflux::{Miniflux, MinifluxStatus, entry_as_html};
+use plato_core::view::hn::Hn;
 use plato_core::document::sys_info_as_html;
 use plato_core::input::{DeviceEvent, PowerSource, ButtonCode, ButtonStatus, VAL_RELEASE, VAL_PRESS};
 use plato_core::input::{raw_events, device_events, usb_events, display_rotate_event, button_scheme_event};
@@ -412,7 +413,7 @@ pub fn run() -> Result<(), Error> {
                                                       &tx, &mut rq, &mut context);
                         context.online = true;
                         view.children_mut().push(Box::new(notif) as Box<dyn View>);
-                        if view.is::<Miniflux>() {
+                        if view.is::<Miniflux>() || view.is::<Hn>() {
                             view.handle_event(&evt, &tx, &mut bus, &mut rq, &mut context);
                         }
                         if view.is::<Home>() {
@@ -831,6 +832,9 @@ pub fn run() -> Result<(), Error> {
                     AppCmd::Miniflux => {
                         Box::new(Miniflux::new(context.fb.rect(), &tx, &mut rq, &mut context))
                     },
+                    AppCmd::HackerNews => {
+                        Box::new(Hn::new(context.fb.rect(), &tx, &mut rq, &mut context))
+                    },
                 };
                 transfer_notifications(view.as_mut(), next_view.as_mut(), &mut rq, &mut context);
                 history.push(HistoryItem {
@@ -960,6 +964,13 @@ pub fn run() -> Result<(), Error> {
                 };
                 let notif = Notification::new(msg, &tx, &mut rq, &mut context);
                 view.children_mut().push(Box::new(notif) as Box<dyn View>);
+            },
+            Event::HackerNewsResponse(..) if !view.is::<Hn>() => {
+                if let Some(entry) = history.iter_mut().rev().find(|entry| entry.view.is::<Hn>()) {
+                    entry.view.handle_event(&evt, &tx, &mut VecDeque::new(), &mut rq, &mut context);
+                } else {
+                    eprintln!("[hacker-news] Dropping event because no Hacker News view exists in history.");
+                }
             },
             Event::MinifluxSetStatus(..) |
             Event::MinifluxSetStatusQuiet(..) |

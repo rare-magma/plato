@@ -32,6 +32,7 @@ use plato_core::view::sketch::Sketch;
 use plato_core::view::touch_events::TouchEvents;
 use plato_core::view::rotation_values::RotationValues;
 use plato_core::view::miniflux::{Miniflux, MinifluxStatus, entry_as_html};
+use plato_core::view::hn::Hn;
 use plato_core::view::common::{locate, locate_by_id, transfer_notifications, overlapping_rectangle};
 use plato_core::view::common::{toggle_input_history_menu, toggle_keyboard_layout_menu};
 use plato_core::helpers::{load_toml, save_toml};
@@ -477,6 +478,9 @@ fn run() -> Result<(), Error> {
                         AppCmd::Miniflux => {
                             Box::new(Miniflux::new(context.fb.rect(), &tx, &mut rq, &mut context))
                         },
+                        AppCmd::HackerNews => {
+                            Box::new(Hn::new(context.fb.rect(), &tx, &mut rq, &mut context))
+                        },
                     };
                     transfer_notifications(view.as_mut(), next_view.as_mut(), &mut rq, &mut context);
                     history.push(view as Box<dyn View>);
@@ -591,12 +595,19 @@ fn run() -> Result<(), Error> {
                     let notif = Notification::new(msg, &tx, &mut rq, &mut context);
                     view.children_mut().push(Box::new(notif) as Box<dyn View>);
                 },
-                Event::Device(DeviceEvent::NetUp) if view.is::<Miniflux>() => {
+                Event::Device(DeviceEvent::NetUp) if view.is::<Miniflux>() || view.is::<Hn>() => {
                     context.online = true;
                     view.handle_event(&evt, &tx, &mut bus, &mut rq, &mut context);
                     if let Some(home) = history.get_mut(0).filter(|view| view.is::<Home>()) {
                         let (tx, _rx) = mpsc::channel();
                         home.handle_event(&evt, &tx, &mut VecDeque::new(), &mut RenderQueue::new(), &mut context);
+                    }
+                },
+                Event::HackerNewsResponse(..) if !view.is::<Hn>() => {
+                    if let Some(hn) = history.iter_mut().rev().find(|view| view.is::<Hn>()) {
+                        hn.handle_event(&evt, &tx, &mut VecDeque::new(), &mut rq, &mut context);
+                    } else {
+                        eprintln!("[hacker-news] Dropping event because no Hacker News view exists in history.");
                     }
                 },
                 Event::MinifluxSetStatus(..) |

@@ -1200,6 +1200,7 @@ impl View for MinifluxBottomBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::Document;
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
