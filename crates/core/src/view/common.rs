@@ -85,10 +85,6 @@ pub fn toggle_main_menu(view: &mut dyn View, rect: Rectangle, enable: Option<boo
                                            EntryId::Launch(AppCmd::Calculator)),
                         EntryKind::Command("Sketch".to_string(),
                                            EntryId::Launch(AppCmd::Sketch)),
-                        EntryKind::Command("Miniflux".to_string(),
-                                           EntryId::Launch(AppCmd::Miniflux)),
-                        EntryKind::Command("Hacker News".to_string(),
-                                           EntryId::Launch(AppCmd::HackerNews)),
                         EntryKind::Separator,
                         EntryKind::Command("Touch Events".to_string(),
                                            EntryId::Launch(AppCmd::TouchEvents)),
@@ -98,6 +94,10 @@ pub fn toggle_main_menu(view: &mut dyn View, rect: Rectangle, enable: Option<boo
                                                   EntryId::About),
                                EntryKind::Command("System Info".to_string(),
                                                   EntryId::SystemInfo),
+                               EntryKind::Command("Miniflux".to_string(),
+                                                  EntryId::Launch(AppCmd::Miniflux)),
+                               EntryKind::Command("Hacker News".to_string(),
+                                                  EntryId::Launch(AppCmd::HackerNews)),
                                EntryKind::Separator,
                                EntryKind::CheckBox("Invert Colors".to_string(),
                                                    EntryId::ToggleInverted,
@@ -122,7 +122,7 @@ pub fn toggle_main_menu(view: &mut dyn View, rect: Rectangle, enable: Option<boo
                 EntryKind::RadioButton(ButtonScheme::Natural.to_string(), EntryId::SetButtonScheme(ButtonScheme::Natural), button_scheme == ButtonScheme::Natural),
                 EntryKind::RadioButton(ButtonScheme::Inverted.to_string(), EntryId::SetButtonScheme(ButtonScheme::Inverted), button_scheme == ButtonScheme::Inverted),
             ];
-            entries.insert(5, EntryKind::SubMenu("Button Scheme".to_string(), button_schemes));
+            entries.insert(7, EntryKind::SubMenu("Button Scheme".to_string(), button_schemes));
         }
 
         if CURRENT_DEVICE.has_gyroscope() {
@@ -134,7 +134,7 @@ pub fn toggle_main_menu(view: &mut dyn View, rect: Rectangle, enable: Option<boo
                 EntryKind::RadioButton("Landscape".to_string(), EntryId::SetRotationLock(Some(RotationLock::Landscape)), rotation_lock == Some(RotationLock::Landscape)),
                 EntryKind::RadioButton("Ignore".to_string(), EntryId::SetRotationLock(Some(RotationLock::Current)), rotation_lock == Some(RotationLock::Current)),
             ];
-            entries.insert(5, EntryKind::SubMenu("Gyroscope".to_string(), gyro));
+            entries.insert(7, EntryKind::SubMenu("Gyroscope".to_string(), gyro));
         }
 
         let main_menu = Menu::new(rect, ViewId::MainMenu, MenuKind::DropDown, entries, context);

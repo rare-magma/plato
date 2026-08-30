@@ -33,6 +33,7 @@ use std::thread;
 use std::time::Duration;
 
 pub const ALGOLIA_HN_API: &str = "https://hn.algolia.com";
+pub const HCKER_NEWS_API: &str = "https://hcker.news";
 pub const COMMENT_COLLAPSE_PREFIX: &str = "hn-collapse:";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_COMMENT_INDENT: usize = 6;
@@ -126,6 +127,26 @@ where
     Ok(match value {
         JsonValue::Number(value) => value.as_i64().unwrap_or_default(),
         JsonValue::String(value) => value.parse().unwrap_or_default(),
+        _ => 0,
+    })
+}
+
+fn timestamp_or_default<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = JsonValue::deserialize(deserializer)?;
+    Ok(match value {
+        JsonValue::Number(value) => value.as_i64().unwrap_or_default(),
+        JsonValue::String(value) => value
+            .parse()
+            .ok()
+            .or_else(|| {
+                chrono::DateTime::parse_from_rfc3339(&value)
+                    .ok()
+                    .map(|timestamp| timestamp.timestamp())
+            })
+            .unwrap_or_default(),
         _ => 0,
     })
 }
@@ -232,18 +253,60 @@ pub struct HnItem {
     pub points: u64,
     #[serde(rename = "num_comments", deserialize_with = "u64_or_default")]
     pub num_comments: u64,
-    #[serde(deserialize_with = "i64_or_default")]
+    #[serde(alias = "createdAt", deserialize_with = "timestamp_or_default")]
     pub created_at_i: i64,
-    #[serde(deserialize_with = "string_or_default")]
+    #[serde(alias = "rawHtml", deserialize_with = "string_or_default")]
     pub text: String,
     #[serde(rename = "story_text", deserialize_with = "string_or_default")]
     pub story_text: String,
     #[serde(deserialize_with = "children_or_default")]
     pub children: Vec<HnItem>,
-    #[serde(deserialize_with = "bool_or_default")]
+    #[serde(alias = "isDeleted", deserialize_with = "bool_or_default")]
     pub deleted: bool,
     #[serde(deserialize_with = "bool_or_default")]
     pub dead: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct HnCommentsResponse {
+    #[serde(rename = "storyId", deserialize_with = "string_or_default")]
+    story_id: String,
+    #[serde(rename = "storyTitle", deserialize_with = "string_or_default")]
+    story_title: String,
+    #[serde(rename = "storyUrl", deserialize_with = "string_or_default")]
+    story_url: String,
+    #[serde(rename = "storyAuthor", deserialize_with = "string_or_default")]
+    story_author: String,
+    #[serde(rename = "storyScore", deserialize_with = "u64_or_default")]
+    story_score: u64,
+    #[serde(rename = "storyTime", deserialize_with = "timestamp_or_default")]
+    story_time: i64,
+    #[serde(deserialize_with = "children_or_default")]
+    comments: Vec<HnItem>,
+    #[serde(rename = "totalCount", deserialize_with = "u64_or_default")]
+    total_count: u64,
+}
+
+impl HnCommentsResponse {
+    fn into_item(self, requested_story_id: &str) -> HnItem {
+        HnItem {
+            id: if self.story_id.is_empty() {
+                requested_story_id.to_string()
+            } else {
+                self.story_id
+            },
+            item_type: "story".to_string(),
+            title: self.story_title,
+            url: self.story_url,
+            author: self.story_author,
+            points: self.story_score,
+            num_comments: self.total_count,
+            created_at_i: self.story_time,
+            children: self.comments,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -283,15 +346,26 @@ fn error_chain(error: &dyn StdError) -> String {
 struct Api {
     client: Client,
     domain: String,
+    comments_domain: String,
 }
 
 impl Api {
     fn new(domain: String) -> Result<Api, String> {
+        Self::new_with_comments_domain(domain, HCKER_NEWS_API.to_string())
+    }
+
+    fn new_with_comments_domain(domain: String, comments_domain: String) -> Result<Api, String> {
         let domain = domain.trim().trim_end_matches('/');
         let domain = if domain.contains("://") {
             domain.to_string()
         } else {
             format!("https://{}", domain)
+        };
+        let comments_domain = comments_domain.trim().trim_end_matches('/');
+        let comments_domain = if comments_domain.contains("://") {
+            comments_domain.to_string()
+        } else {
+            format!("https://{}", comments_domain)
         };
         let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
             .iter()
@@ -311,7 +385,11 @@ impl Api {
                 eprintln!("[hacker-news] {} (debug={:?}).", message, e);
                 message
             })?;
-        Ok(Api { client, domain })
+        Ok(Api {
+            client,
+            domain,
+            comments_domain,
+        })
     }
 
     fn checked_json<T: DeserializeOwned>(operation: &str, response: Response) -> Result<T, String> {
@@ -369,15 +447,18 @@ impl Api {
         Self::checked_json(operation, response)
     }
 
-    fn item(&self, story_id: &str) -> Result<HnItem, String> {
+    fn comments(&self, story_id: &str) -> Result<HnItem, String> {
         let id = validate_story_id(story_id)?;
-        let operation = format!("GET /api/v1/items/{}", id);
+        let operation = format!("GET /api/comments/{}", id);
         let response = self
             .client
-            .get(format!("{}/api/v1/items/{}", self.domain, id))
+            .get(format!("{}/api/comments/{}", self.comments_domain, id))
+            .header("Accept", "application/json")
+            .header("Referer", format!("{}/", self.comments_domain))
             .send()
             .map_err(|e| Self::transport_error(&operation, e))?;
-        Self::checked_json(&operation, response)
+        let result: HnCommentsResponse = Self::checked_json(&operation, response)?;
+        Ok(result.into_item(&id.to_string()))
     }
 }
 
@@ -462,7 +543,7 @@ fn spawn_api_worker(domain: String, hub: &Hub) -> Result<Sender<ApiCommand>, Str
                 ApiCommand::GetItem {
                     request_id,
                     story_id,
-                } => match api.item(&story_id) {
+                } => match api.comments(&story_id) {
                     Ok(mut item) => {
                         if item.id.is_empty() {
                             item.id = story_id.clone();
@@ -1264,11 +1345,20 @@ impl Hn {
                 }
                 self.item_request = None;
                 self.active_story_id = None;
+                let mut item = item.clone();
+                if item.story_text.is_empty() {
+                    item.story_text = self
+                        .stories
+                        .iter()
+                        .find(|story| story.object_id == *story_id)
+                        .map(|story| story.story_text.clone())
+                        .unwrap_or_default();
+                }
                 self.thread_item = Some(item.clone());
                 self.collapsed_comments.clear();
                 self.error = None;
                 self.rebuild(rq, context);
-                hub.send(Event::OpenHtml(item_as_html(item), None)).ok();
+                hub.send(Event::OpenHtml(item_as_html(&item), None)).ok();
             }
             HnResponse::Error {
                 request_id,
@@ -1966,6 +2056,29 @@ mod tests {
         assert!(request.contains("page=2"));
         assert!(request.contains("hitsPerPage=7"));
         assert!(!request.contains("search_by_date"));
+    }
+
+    #[test]
+    fn comments_use_hcker_api_and_map_nested_html_comments() {
+        let (domain, request) = server(
+            r#"{"storyId":49489982,"storyTitle":"A","storyUrl":"https://example.com","storyAuthor":"author","storyScore":42,"storyTime":"2026-08-29T14:02:10Z","comments":[{"id":1,"parentId":49489982,"author":"one","createdAt":"2026-08-29T14:35:12Z","points":null,"rawHtml":"<p>one</p>","depth":0,"isDeleted":false,"children":[{"id":2,"parentId":1,"author":"two","createdAt":"2026-08-29T14:36:12Z","rawHtml":"two","isDeleted":true,"children":[]}] }],"totalCount":2,"maxDepth":1}"#,
+        );
+        let api = Api::new_with_comments_domain(domain.clone(), domain.clone()).unwrap();
+        let item = api.comments("49489982").unwrap();
+        assert_eq!(item.id, "49489982");
+        assert_eq!(item.title, "A");
+        assert_eq!(item.points, 42);
+        assert_eq!(item.created_at_i, 1_788_012_130);
+        assert_eq!(item.children.len(), 1);
+        assert_eq!(item.children[0].created_at_i, 1_788_014_112);
+        assert_eq!(item.children[0].text, "<p>one</p>");
+        assert_eq!(item.children[0].children[0].text, "two");
+        assert!(item.children[0].children[0].deleted);
+
+        let request = request.join().unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("get /api/comments/49489982 "));
+        assert!(request.contains("accept: application/json"));
+        assert!(request.contains(&format!("referer: {}/", domain).to_ascii_lowercase()));
     }
 
     #[test]
