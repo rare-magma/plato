@@ -438,10 +438,17 @@ fn run() -> Result<(), Error> {
                         handle_event(view.as_mut(), &Event::Invalid(path), &tx, &mut bus, &mut rq, &mut context);
                     }
                 },
-                Event::OpenMinifluxEntry(ref entry) => {
+                Event::OpenMinifluxEntry(entry, resources) => {
                     view.children_mut().retain(|child| !child.is::<Menu>());
-                    let html = entry_as_html(entry);
-                    let mut r = Reader::from_html(context.fb.rect(), &html, None, &tx, &mut context);
+                    let html = entry_as_html(&entry);
+                    let mut r = Reader::from_html_with_resources(
+                        context.fb.rect(),
+                        &html,
+                        None,
+                        resources,
+                        &tx,
+                        &mut context,
+                    );
                     r.set_miniflux_entry_id(entry.id);
                     let mut next_view = Box::new(r) as Box<dyn View>;
                     transfer_notifications(view.as_mut(), next_view.as_mut(), &mut rq, &mut context);
@@ -612,6 +619,7 @@ fn run() -> Result<(), Error> {
                     }
                 },
                 Event::MinifluxSetStatus(..) |
+                Event::MinifluxEntryResult(..) |
                 Event::MinifluxResponse(..) if !view.is::<Miniflux>() => {
                     if let Some(miniflux) = history.iter_mut().rev().find(|view| view.is::<Miniflux>()) {
                         miniflux.handle_event(&evt, &tx, &mut VecDeque::new(), &mut rq, &mut context);

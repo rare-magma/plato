@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::convert::TryFrom;
 use anyhow::Error;
 use kl_hyphenate::{Standard, Hyphenator, Iter};
@@ -40,6 +40,18 @@ pub type Page = Vec<DrawCommand>;
 
 pub trait ResourceFetcher {
     fn fetch(&mut self, name: &str) -> Result<Vec<u8>, Error>;
+}
+
+pub fn resource_name(spine_dir: &Path, src: &str) -> Option<String> {
+    spine_dir
+        .join(src)
+        .normalize()
+        .to_str()
+        .map(|uri| {
+            percent_decode_str(&decode_entities(uri))
+                .decode_utf8_lossy()
+                .into_owned()
+        })
 }
 
 // TODO: Add min_font_size.
@@ -660,12 +672,10 @@ impl Engine {
                     "img" | "image" => {
                         let attr = if name == "img" { "src" } else { "xlink:href" };
 
-                        let path = attributes.get(attr).and_then(|src| {
-                            spine_dir.join(src).normalize().to_str()
-                                     .map(|uri| percent_decode_str(&decode_entities(uri))
-                                                                  .decode_utf8_lossy()
-                                                                  .into_owned())
-                        }).unwrap_or_default();
+                        let path = attributes
+                            .get(attr)
+                            .and_then(|src| resource_name(spine_dir, src))
+                            .unwrap_or_default();
 
                         style.float = props.get("float").and_then(|value| parse_float(value));
 

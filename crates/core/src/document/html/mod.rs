@@ -29,24 +29,39 @@ const USER_STYLESHEET: &str = "css/html-user.css";
 
 type UriCache = FxHashMap<String, usize>;
 
+pub type ResourceMap = FxHashMap<String, Vec<u8>>;
+
+enum ResourceSource {
+    Filesystem(PathBuf),
+    Memory(ResourceMap),
+}
+
 pub struct HtmlDocument {
     text: String,
     content: XmlTree,
     engine: Engine,
     pages: Vec<Page>,
-    parent: PathBuf,
+    resources: ResourceSource,
     size: usize,
     viewer_stylesheet: PathBuf,
     user_stylesheet: PathBuf,
     ignore_document_css: bool,
 }
 
-impl ResourceFetcher for PathBuf {
+impl ResourceFetcher for ResourceSource {
     fn fetch(&mut self, name: &str) -> Result<Vec<u8>, Error> {
-        let mut file = File::open(self.join(name))?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)?;
-        Ok(buf)
+        match self {
+            ResourceSource::Filesystem(parent) => {
+                let mut file = File::open(parent.join(name))?;
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf)?;
+                Ok(buf)
+            }
+            ResourceSource::Memory(resources) => resources
+                .get(name)
+                .cloned()
+                .ok_or_else(|| Error::msg(format!("resource not found: {}", name))),
+        }
     }
 }
 
@@ -68,7 +83,7 @@ impl HtmlDocument {
             content,
             engine: Engine::new(),
             pages: Vec::new(),
-            parent: parent.to_path_buf(),
+            resources: ResourceSource::Filesystem(parent.to_path_buf()),
             size,
             viewer_stylesheet: PathBuf::from(VIEWER_STYLESHEET),
             user_stylesheet: PathBuf::from(USER_STYLESHEET),
@@ -77,6 +92,10 @@ impl HtmlDocument {
     }
 
     pub fn new_from_memory(text: &str) -> HtmlDocument {
+        Self::new_from_memory_with_resources(text, ResourceMap::default())
+    }
+
+    pub fn new_from_memory_with_resources(text: &str, resources: ResourceMap) -> HtmlDocument {
         let size = text.len();
         let mut content = XmlParser::new(text).parse();
         content.wrap_lost_inlines();
@@ -100,7 +119,7 @@ impl HtmlDocument {
             content,
             engine: Engine::new(),
             pages: Vec::new(),
-            parent: PathBuf::default(),
+            resources: ResourceSource::Memory(resources),
             size,
             viewer_stylesheet: PathBuf::from(VIEWER_STYLESHEET),
             user_stylesheet: PathBuf::from(USER_STYLESHEET),
@@ -195,7 +214,7 @@ impl HtmlDocument {
                     if child.tag_name() == Some("link") && child.attribute("rel") == Some("stylesheet") {
                         if let Some(href) = child.attribute("href") {
                             if let Some(name) = spine_dir.join(href).normalize().to_str() {
-                                if let Ok(buf) = self.parent.fetch(name) {
+                                if let Ok(buf) = self.resources.fetch(name) {
                                     if let Ok(text) = String::from_utf8(buf) {
                                         let mut css = CssParser::new(&text).parse();
                                         inner_css.append(&mut css, false);
@@ -248,7 +267,7 @@ impl HtmlDocument {
 
         pages.push(Vec::new());
 
-        self.engine.build_display_list(self.content.root(), &style, &loop_context, &stylesheet, &root_data, &mut self.parent, &mut draw_state, &mut pages);
+        self.engine.build_display_list(self.content.root(), &style, &loop_context, &stylesheet, &root_data, &mut self.resources, &mut draw_state, &mut pages);
 
         pages.retain(|page| !page.is_empty());
 
@@ -422,7 +441,7 @@ impl Document for HtmlDocument {
             },
         };
         let page = self.pages[page_index].clone();
-        match self.engine.render_page(&page, scale, samples, &mut self.parent) {
+        match self.engine.render_page(&page, scale, samples, &mut self.resources) {
             Some(pixmap) => Some((pixmap, offset)),
             None => {
                 eprintln!("[html] ERROR: HTML renderer returned no pixmap (page_index={}, offset={}, scale={}, bytes={}).",
@@ -506,5 +525,34 @@ impl Document for HtmlDocument {
 
     fn has_synthetic_page_numbers(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Document, Location};
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x00\x00\x00\x00\x3a\x7e\x9b\x55\x00\x00\x00\x0aIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82";
+
+    #[test]
+    fn in_memory_resources_are_available_for_layout_and_rendering() {
+        let src = "https://example.com/image.png";
+        let mut resources = ResourceMap::default();
+        resources.insert(
+            crate::document::html::engine::resource_name(Path::new(""), src).unwrap(),
+            PNG.to_vec(),
+        );
+        let html = format!(
+            "<!doctype html><html><head><title>Image</title></head><body><img src=\"{}\"/></body></html>",
+            src
+        );
+        let mut document = HtmlDocument::new_from_memory_with_resources(&html, resources);
+        document.layout(600, 800, 12.0, 300);
+
+        let (images, _) = document.images(Location::Exact(0)).unwrap();
+        assert_eq!(images.len(), 1);
+        let (pixmap, _) = document.pixmap(Location::Exact(0), 1.0, 1).unwrap();
+        assert!(!pixmap.data().is_empty());
     }
 }

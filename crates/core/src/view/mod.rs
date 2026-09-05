@@ -66,6 +66,7 @@ use crate::gesture::GestureEvent;
 use self::calculator::LineOrigin;
 use self::key::KeyKind;
 use crate::context::Context;
+use crate::document::html::ResourceMap;
 use self::miniflux::{MinifluxEntry, MinifluxStatus};
 use self::hn::{HnResponse, TimeWindow};
 
@@ -294,6 +295,13 @@ pub fn wait_for_all(updating: &mut Vec<UpdateData>, context: &mut Context) {
 }
 
 #[derive(Debug, Clone)]
+pub struct MinifluxEntryResult {
+    pub request_id: u64,
+    pub entry: MinifluxEntry,
+    pub resources: Box<ResourceMap>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Event {
     Device(DeviceEvent),
     Gesture(GestureEvent),
@@ -301,8 +309,9 @@ pub enum Event {
     Key(KeyKind),
     Open(Box<Info>),
     OpenHtml(String, Option<String>),
-    OpenMinifluxEntry(Box<MinifluxEntry>),
+    OpenMinifluxEntry(Box<MinifluxEntry>, Box<ResourceMap>),
     MinifluxOpen(u64),
+    MinifluxEntryResult(MinifluxEntryResult),
     MinifluxResponse(serde_json::Value),
     HackerNewsOpen(String),
     HackerNewsResponse(HnResponse),

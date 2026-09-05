@@ -15,17 +15,23 @@ use crate::view::menu::{Menu, MenuKind};
 use crate::view::page_label::PageLabel;
 use crate::view::top_bar::TopBar;
 use crate::view::Align;
-use crate::view::{Bus, EntryId, EntryKind, Event, Hub, Id, ID_FEEDER};
+use crate::view::{Bus, EntryId, EntryKind, Event, Hub, Id, ID_FEEDER, MinifluxEntryResult};
 use crate::view::{
     RenderData, RenderQueue, View, ViewId, BIG_BAR_HEIGHT, SMALL_BAR_HEIGHT, THICKNESS_MEDIUM,
 };
+use crate::document::html::engine::resource_name;
+use crate::document::html::xml::XmlParser;
+use crate::document::html::ResourceMap;
+use crate::helpers::decode_entities;
 use reqwest::blocking::{Client, Response};
 use reqwest::header::CONTENT_TYPE;
+use reqwest::Url;
 use reqwest::Certificate;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use std::error::Error as StdError;
+use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
@@ -213,6 +219,26 @@ impl Api {
         message
     }
 
+    fn fetch_image(&self, url: &Url) -> Result<Vec<u8>, String> {
+        let response = self
+            .client
+            .get(url.clone())
+            .send()
+            .map_err(|e| format!("transport error: {}", error_chain(&e)))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!(
+                "{} {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("HTTP error")
+            ));
+        }
+        response
+            .bytes()
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| format!("can't read response body: {}", error_chain(&e)))
+    }
+
     fn categories(&self) -> Result<JsonValue, String> {
         let operation = "GET /v1/categories?counts=true";
         let response = self
@@ -331,6 +357,85 @@ impl Api {
     }
 }
 
+fn resolve_image_url(src: &str, entry_url: &str, site_url: &str) -> Option<Url> {
+    let src = decode_entities(src);
+    let src = src.trim();
+
+    if let Ok(url) = Url::parse(src) {
+        if matches!(url.scheme(), "http" | "https") {
+            return Some(url);
+        }
+    }
+
+    for base in [entry_url, site_url] {
+        let Ok(base) = Url::parse(base.trim()) else {
+            continue;
+        };
+        let Ok(url) = base.join(src) else {
+            continue;
+        };
+        if matches!(url.scheme(), "http" | "https") {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn fetch_entry_images(api: &Api, entry: &MinifluxEntry) -> ResourceMap {
+    let content = XmlParser::new(&entry.content).parse();
+    let mut requests = Vec::<(Url, Vec<String>)>::new();
+    let mut request_indexes = HashMap::<String, usize>::new();
+
+    for node in content.root().descendants() {
+        let source = match node.tag_name() {
+            Some("img") => node.attribute("src"),
+            Some("image") => node.attribute("xlink:href"),
+            _ => None,
+        };
+        let Some(source) = source else {
+            continue;
+        };
+        if source.trim().is_empty() {
+            continue;
+        }
+        let Some(name) = resource_name(Path::new(""), source) else {
+            continue;
+        };
+        let Some(url) = resolve_image_url(source, &entry.url, &entry.feed.site_url) else {
+            continue;
+        };
+        let url_key = url.to_string();
+        if let Some(index) = request_indexes.get(&url_key).copied() {
+            if !requests[index].1.contains(&name) {
+                requests[index].1.push(name);
+            }
+        } else {
+            request_indexes.insert(url_key, requests.len());
+            requests.push((url, vec![name]));
+        }
+    }
+
+    let mut resources = ResourceMap::default();
+    for (url, names) in requests {
+        match api.fetch_image(&url) {
+            Ok(bytes) => {
+                for name in names {
+                    resources.insert(name, bytes.clone());
+                }
+            }
+            Err(message) => {
+                eprintln!("[miniflux] Can't fetch image {}: {}.", url, message);
+            }
+        }
+    }
+    resources
+}
+
+enum ApiResponse {
+    Json(JsonValue),
+    Entry(MinifluxEntryResult),
+}
+
 fn spawn_api_worker(
     domain: String,
     api_key: String,
@@ -351,8 +456,8 @@ fn spawn_api_worker(
             };
             let response = match command {
                 ApiCommand::ListCategories { .. } => api.categories().map(|categories| {
-                    json!({"type": "categories", "requestId": request_id,
-                                              "categories": categories})
+                    ApiResponse::Json(json!({"type": "categories", "requestId": request_id,
+                                             "categories": categories}))
                 }),
                 ApiCommand::ListEntries {
                     category_id,
@@ -360,34 +465,51 @@ fn spawn_api_worker(
                     limit,
                     ..
                 } => api.entries(category_id, offset, limit).map(|result| {
-                    json!({"type": "entries", "requestId": request_id,
-                                            "result": result})
+                    ApiResponse::Json(json!({"type": "entries", "requestId": request_id,
+                                             "result": result}))
                 }),
-                ApiCommand::GetEntry { entry_id, .. } => api.entry(entry_id).map(|entry| {
-                    json!({"type": "entry", "requestId": request_id,
-                                        "entry": entry})
+                ApiCommand::GetEntry { entry_id, .. } => api.entry(entry_id).and_then(|value| {
+                    serde_json::from_value::<MinifluxEntry>(value)
+                        .map_err(|err| {
+                            eprintln!(
+                                "[miniflux] Can't parse entry response {}: {}.",
+                                request_id, err
+                            );
+                            format!("invalid Miniflux entry: {}", err)
+                        })
+                        .map(|entry| {
+                            let resources = fetch_entry_images(&api, &entry);
+                            ApiResponse::Entry(MinifluxEntryResult {
+                                request_id,
+                                entry,
+                                resources: Box::new(resources),
+                            })
+                        })
                 }),
                 ApiCommand::SetStatus {
                     entry_id, status, ..
                 } => api.set_status(entry_id, status).map(|_| {
-                    json!({"type": "status", "requestId": request_id,
-                                    "entryId": entry_id, "status": status.as_str()})
+                    ApiResponse::Json(json!({"type": "status", "requestId": request_id,
+                                             "entryId": entry_id, "status": status.as_str()}))
                 }),
                 ApiCommand::MarkAllRead { category_id, .. } => api
                     .mark_all_read(category_id)
-                    .map(|_| json!({"type": "mark-all-read", "requestId": request_id})),
+                    .map(|_| ApiResponse::Json(json!({"type": "mark-all-read", "requestId": request_id}))),
             };
-            let response = match response {
-                Ok(response) => response,
+            let event = match response {
+                Ok(ApiResponse::Json(response)) => Event::MinifluxResponse(response),
+                Ok(ApiResponse::Entry(result)) => Event::MinifluxEntryResult(result),
                 Err(message) => {
                     eprintln!(
                         "[miniflux] Request {} failed ({}): {}.",
                         request_id, description, message
                     );
-                    json!({"type": "error", "requestId": request_id, "message": message})
+                    Event::MinifluxResponse(
+                        json!({"type": "error", "requestId": request_id, "message": message}),
+                    )
                 }
             };
-            if hub.send(Event::MinifluxResponse(response)).is_err() {
+            if hub.send(event).is_err() {
                 eprintln!(
                     "[miniflux] Request {} response could not be delivered; event channel closed.",
                     request_id
@@ -791,6 +913,22 @@ impl Miniflux {
         }
     }
 
+    fn handle_entry_result(&mut self, result: &MinifluxEntryResult, hub: &Hub) {
+        if self.entry_request != Some(result.request_id) {
+            eprintln!(
+                "[miniflux] Ignoring stale entry response {} (expected {:?}).",
+                result.request_id, self.entry_request
+            );
+            return;
+        }
+        self.entry_request = None;
+        hub.send(Event::OpenMinifluxEntry(
+            Box::new(result.entry.clone()),
+            result.resources.clone(),
+        ))
+        .ok();
+    }
+
     fn handle_response(
         &mut self,
         response: &JsonValue,
@@ -868,7 +1006,11 @@ impl Miniflux {
                 if let Some(value) = response.get("entry") {
                     match serde_json::from_value::<MinifluxEntry>(value.clone()) {
                         Ok(entry) => {
-                            hub.send(Event::OpenMinifluxEntry(Box::new(entry))).ok();
+                            hub.send(Event::OpenMinifluxEntry(
+                                Box::new(entry),
+                                Box::new(ResourceMap::default()),
+                            ))
+                            .ok();
                         }
                         Err(err) => {
                             eprintln!(
@@ -944,6 +1086,10 @@ impl View for Miniflux {
         context: &mut Context,
     ) -> bool {
         match *evt {
+            Event::MinifluxEntryResult(ref result) => {
+                self.handle_entry_result(result, hub);
+                true
+            }
             Event::MinifluxResponse(ref response) => {
                 self.handle_response(response, hub, rq, context);
                 true
@@ -1357,6 +1503,31 @@ mod tests {
         (format!("http://{}", address), handle)
     }
 
+    fn binary_server(responses: &[(&str, &[u8])]) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let responses = responses
+            .iter()
+            .map(|(status, body)| (status.to_string(), body.to_vec()))
+            .collect::<Vec<_>>();
+        let handle = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                requests.push(read_request(&mut stream));
+                let headers = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    status,
+                    body.len()
+                );
+                stream.write_all(headers.as_bytes()).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+            requests
+        });
+        (format!("http://{}", address), handle)
+    }
+
     #[test]
     fn wraps_entry_content_and_escapes_metadata() {
         let entry = MinifluxEntry {
@@ -1373,6 +1544,81 @@ mod tests {
 
         let document = crate::document::html::HtmlDocument::new_from_memory(&html);
         assert_eq!(document.title().as_deref(), Some("A <title>"));
+    }
+
+    #[test]
+    fn resolves_supported_image_urls_and_feed_fallback() {
+        assert_eq!(
+            resolve_image_url(
+                "https://cdn.example/image.png",
+                "https://example/article",
+                "https://feed.example/"
+            )
+            .unwrap()
+            .as_str(),
+            "https://cdn.example/image.png"
+        );
+        assert_eq!(
+            resolve_image_url(
+                "//cdn.example/image.png",
+                "https://example/article",
+                "https://feed.example/"
+            )
+            .unwrap()
+            .as_str(),
+            "https://cdn.example/image.png"
+        );
+        assert_eq!(
+            resolve_image_url(
+                "/image.png",
+                "https://example/article",
+                "https://feed.example/"
+            )
+            .unwrap()
+            .as_str(),
+            "https://example/image.png"
+        );
+        assert_eq!(
+            resolve_image_url("image.png", "", "https://feed.example/section/")
+                .unwrap()
+                .as_str(),
+            "https://feed.example/section/image.png"
+        );
+        assert!(resolve_image_url("data:image/png;base64,abc", "https://example/", "").is_none());
+    }
+
+    #[test]
+    fn normalizes_entity_and_percent_encoded_image_names() {
+        assert_eq!(
+            resource_name(Path::new(""), "/a%20b&amp;c.png").as_deref(),
+            Some("/a b&c.png")
+        );
+    }
+
+    #[test]
+    fn fetches_unique_images_without_forwarding_api_auth() {
+        let image = [1, 2, 3, 4];
+        let (domain, requests) = binary_server(&[("200 OK", &image), ("404 Not Found", &[])]);
+        let api = Api::new(domain.clone(), "secret".to_string()).unwrap();
+        let entry = MinifluxEntry {
+            url: format!("{}/article", domain),
+            content: "<img src=\"/image%20one.png\"/><img src=\"/missing.png\"/><img src=\"/image%20one.png\"/>".to_string(),
+            ..Default::default()
+        };
+
+        let resources = fetch_entry_images(&api, &entry);
+        let image_name = resource_name(Path::new(""), "/image%20one.png").unwrap();
+        let missing_name = resource_name(Path::new(""), "/missing.png").unwrap();
+        assert_eq!(resources.get(&image_name).map(Vec::as_slice), Some(&image[..]));
+        assert!(!resources.contains_key(&missing_name));
+
+        let requests = requests.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("GET /image%20one.png "));
+        assert!(requests[1].starts_with("GET /missing.png "));
+        assert!(requests
+            .iter()
+            .all(|request| !request.to_ascii_lowercase().contains("x-auth-token")));
     }
 
     #[test]

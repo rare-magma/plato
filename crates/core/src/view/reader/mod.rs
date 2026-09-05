@@ -50,7 +50,7 @@ use crate::frontlight::LightLevels;
 use crate::gesture::GestureEvent;
 use crate::document::{Document, open, Location, TextLocation, BoundedText, Neighbors, BYTES_PER_PAGE};
 use crate::document::{TocEntry, SimpleTocEntry, TocLocation, toc_as_html, annotations_as_html, bookmarks_as_html};
-use crate::document::html::HtmlDocument;
+use crate::document::html::{HtmlDocument, ResourceMap};
 use crate::metadata::{Info, FileInfo, ReaderInfo, Annotation, TextAlign, ZoomMode, ScrollMode, PageScheme};
 use crate::metadata::{Margin, CroppingMargins, make_query};
 use crate::metadata::{DEFAULT_CONTRAST_EXPONENT, DEFAULT_CONTRAST_GRAY};
@@ -397,6 +397,24 @@ impl Reader {
     }
 
     pub fn from_html(rect: Rectangle, html: &str, link_uri: Option<&str>, hub: &Hub, context: &mut Context) -> Reader {
+        Self::from_html_with_resources(
+            rect,
+            html,
+            link_uri,
+            Box::new(ResourceMap::default()),
+            hub,
+            context,
+        )
+    }
+
+    pub fn from_html_with_resources(
+        rect: Rectangle,
+        html: &str,
+        link_uri: Option<&str>,
+        resources: Box<ResourceMap>,
+        hub: &Hub,
+        context: &mut Context,
+    ) -> Reader {
         let id = ID_FEEDER.next();
 
         let mut info = Info {
@@ -408,7 +426,7 @@ impl Reader {
             .. Default::default()
         };
 
-        let mut doc = HtmlDocument::new_from_memory(html);
+        let mut doc = HtmlDocument::new_from_memory_with_resources(html, *resources);
         let (width, height) = context.display.dims;
         let font_size = context.settings.reader.font_size;
         doc.layout(width, height, font_size, CURRENT_DEVICE.dpi);
