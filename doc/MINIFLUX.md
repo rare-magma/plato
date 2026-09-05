@@ -18,8 +18,9 @@ The domain must be the address of the Miniflux installation, without `/v1`.
 
 ## Usage
 
-Open *Menu → Applications → Miniflux*. Tap the title to choose a category or refresh
-the unread list. Opening an entry marks it as read in Miniflux. While reading a
+Open *Menu → Applications → Miniflux*. Tap the title to choose a category, refresh
+the unread list, or mark all entries in the selected category—or all categories—as read.
+Opening an entry marks it as read in Miniflux. While reading a
 Miniflux entry, tap the title and select *Mark as Unread* to restore its unread status.
 
 The application requires a network connection. Plato will enable WiFi when needed.

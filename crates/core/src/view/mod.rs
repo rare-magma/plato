@@ -589,6 +589,7 @@ pub enum EntryId {
     Launch(AppCmd),
     MinifluxCategory(Option<u64>),
     MinifluxRefresh,
+    MinifluxMarkAllRead,
     HackerNewsWindow(TimeWindow),
     HackerNewsRefresh,
     MinifluxMarkRead(u64),

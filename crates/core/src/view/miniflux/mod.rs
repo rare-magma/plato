@@ -100,6 +100,10 @@ enum ApiCommand {
         entry_id: u64,
         status: MinifluxStatus,
     },
+    MarkAllRead {
+        request_id: u64,
+        category_id: Option<u64>,
+    },
 }
 
 impl ApiCommand {
@@ -119,6 +123,9 @@ impl ApiCommand {
             ApiCommand::SetStatus {
                 entry_id, status, ..
             } => format!("set entry {} status to {}", entry_id, status.as_str()),
+            ApiCommand::MarkAllRead { category_id, .. } => {
+                format!("mark all entries as read (category={:?})", category_id)
+            }
         }
     }
 }
@@ -276,6 +283,52 @@ impl Api {
             Self::checked_json(&operation, response).map(|_| ())
         }
     }
+
+    fn mark_all_read(&self, category_id: Option<u64>) -> Result<(), String> {
+        let (operation, response) = if let Some(category_id) = category_id {
+            let operation = format!("PUT /v1/categories/{}/mark-all-as-read", category_id);
+            let response = self
+                .client
+                .put(format!(
+                    "{}/v1/categories/{}/mark-all-as-read",
+                    self.domain, category_id
+                ))
+                .header(AUTH_HEADER, &self.api_key)
+                .send()
+                .map_err(|e| Self::transport_error(&operation, e))?;
+            (operation, response)
+        } else {
+            let operation = "GET /v1/me";
+            let response = self
+                .client
+                .get(format!("{}/v1/me", self.domain))
+                .header(AUTH_HEADER, &self.api_key)
+                .send()
+                .map_err(|e| Self::transport_error(operation, e))?;
+            let user = Self::checked_json(operation, response)?;
+            let user_id = user.get("id").and_then(JsonValue::as_u64).ok_or_else(|| {
+                let message = "invalid current user response: missing numeric 'id'".to_string();
+                eprintln!("[miniflux] {} failed: {}.", operation, message);
+                message
+            })?;
+            let operation = format!("PUT /v1/users/{}/mark-all-as-read", user_id);
+            let response = self
+                .client
+                .put(format!(
+                    "{}/v1/users/{}/mark-all-as-read",
+                    self.domain, user_id
+                ))
+                .header(AUTH_HEADER, &self.api_key)
+                .send()
+                .map_err(|e| Self::transport_error(&operation, e))?;
+            (operation, response)
+        };
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Self::checked_json(&operation, response).map(|_| ())
+        }
+    }
 }
 
 fn spawn_api_worker(
@@ -293,7 +346,8 @@ fn spawn_api_worker(
                 ApiCommand::ListCategories { request_id }
                 | ApiCommand::ListEntries { request_id, .. }
                 | ApiCommand::GetEntry { request_id, .. }
-                | ApiCommand::SetStatus { request_id, .. } => request_id,
+                | ApiCommand::SetStatus { request_id, .. }
+                | ApiCommand::MarkAllRead { request_id, .. } => request_id,
             };
             let response = match command {
                 ApiCommand::ListCategories { .. } => api.categories().map(|categories| {
@@ -319,6 +373,9 @@ fn spawn_api_worker(
                     json!({"type": "status", "requestId": request_id,
                                     "entryId": entry_id, "status": status.as_str()})
                 }),
+                ApiCommand::MarkAllRead { category_id, .. } => api
+                    .mark_all_read(category_id)
+                    .map(|_| json!({"type": "mark-all-read", "requestId": request_id})),
             };
             let response = match response {
                 Ok(response) => response,
@@ -395,6 +452,7 @@ pub struct Miniflux {
     categories_request: Option<u64>,
     entries_request: Option<u64>,
     entry_request: Option<u64>,
+    mark_all_read_request: Option<u64>,
     status_requests: HashMap<u64, (MinifluxStatus, bool)>,
     configured: bool,
 }
@@ -424,6 +482,7 @@ impl Miniflux {
             categories_request: None,
             entries_request: None,
             entry_request: None,
+            mark_all_read_request: None,
             status_requests: HashMap::new(),
             configured: false,
         };
@@ -532,6 +591,15 @@ impl Miniflux {
             request_id,
             entry_id,
             status,
+        });
+    }
+
+    fn mark_all_read(&mut self) {
+        let request_id = self.request_id();
+        self.mark_all_read_request = Some(request_id);
+        self.send(ApiCommand::MarkAllRead {
+            request_id,
+            category_id: self.category_id,
         });
     }
 
@@ -670,6 +738,10 @@ impl Miniflux {
         entries.push(EntryKind::Command(
             "Refresh".to_string(),
             EntryId::MinifluxRefresh,
+        ));
+        entries.push(EntryKind::Command(
+            "Mark all as read".to_string(),
+            EntryId::MinifluxMarkAllRead,
         ));
         let menu = Menu::new(
             rect,
@@ -814,6 +886,13 @@ impl Miniflux {
                     );
                 }
             }
+            Some("mark-all-read") if self.mark_all_read_request == Some(request_id) => {
+                self.mark_all_read_request = None;
+                self.current_page = 0;
+                hub.send(Event::Notify("Marked all entries as read.".to_string()))
+                    .ok();
+                self.refresh();
+            }
             Some("status") => {
                 if let Some((status, notify)) = self.status_requests.remove(&request_id) {
                     if status == MinifluxStatus::Read {
@@ -831,6 +910,9 @@ impl Miniflux {
             }
             Some("error") => {
                 self.status_requests.remove(&request_id);
+                if self.mark_all_read_request == Some(request_id) {
+                    self.mark_all_read_request = None;
+                }
                 let message = response
                     .get("message")
                     .and_then(JsonValue::as_str)
@@ -843,9 +925,10 @@ impl Miniflux {
                     .ok();
             }
             _ => {
-                eprintln!("[miniflux] Ignoring stale or unknown response {} of type '{}'; expected categories={:?}, entries={:?}, entry={:?}.",
+                eprintln!("[miniflux] Ignoring stale or unknown response {} of type '{}'; expected categories={:?}, entries={:?}, entry={:?}, mark-all-read={:?}.",
                           request_id, response_type, self.categories_request,
-                          self.entries_request, self.entry_request);
+                          self.entries_request, self.entry_request,
+                          self.mark_all_read_request);
             }
         }
     }
@@ -895,6 +978,11 @@ impl View for Miniflux {
             }
             Event::Select(EntryId::MinifluxRefresh) => {
                 self.refresh();
+                self.toggle_title_menu(Rectangle::default(), rq, context);
+                true
+            }
+            Event::Select(EntryId::MinifluxMarkAllRead) => {
+                self.mark_all_read();
                 self.toggle_title_menu(Rectangle::default(), rq, context);
                 true
             }
@@ -1204,6 +1292,34 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buf = [0; 4096];
+        loop {
+            let count = stream.read(&mut buf).unwrap();
+            request.extend_from_slice(&buf[..count]);
+            let header_end = request.windows(4).position(|part| part == b"\r\n\r\n");
+            if count == 0 {
+                break;
+            }
+            if let Some(header_end) = header_end {
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")
+                            .and_then(|value| value.parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                if request.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8(request).unwrap()
+    }
+
     fn server(status: &str, body: &str) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -1211,34 +1327,32 @@ mod tests {
         let body = body.to_string();
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut buf = [0; 4096];
-            loop {
-                let count = stream.read(&mut buf).unwrap();
-                request.extend_from_slice(&buf[..count]);
-                let header_end = request.windows(4).position(|part| part == b"\r\n\r\n");
-                if count == 0 {
-                    break;
-                }
-                if let Some(header_end) = header_end {
-                    let headers = String::from_utf8_lossy(&request[..header_end]);
-                    let content_length = headers
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length: ")
-                                .and_then(|value| value.parse::<usize>().ok())
-                        })
-                        .unwrap_or(0);
-                    if request.len() >= header_end + 4 + content_length {
-                        break;
-                    }
-                }
-            }
+            let request = read_request(&mut stream);
             write!(stream,
                    "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                    status, body.len(), body).unwrap();
-            String::from_utf8(request).unwrap()
+            request
+        });
+        (format!("http://{}", address), handle)
+    }
+
+    fn server_sequence(responses: &[(&str, &str)]) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let responses = responses
+            .iter()
+            .map(|(status, body)| (status.to_string(), body.to_string()))
+            .collect::<Vec<_>>();
+        let handle = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                requests.push(read_request(&mut stream));
+                write!(stream,
+                       "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                       status, body.len(), body).unwrap();
+            }
+            requests
         });
         (format!("http://{}", address), handle)
     }
@@ -1292,5 +1406,52 @@ mod tests {
         let request = request.join().unwrap();
         assert!(request.starts_with("PUT /v1/entries "));
         assert!(request.contains(r#"{"entry_ids":[123],"status":"unread"}"#));
+    }
+
+    #[test]
+    fn marks_all_entries_read_for_a_category() {
+        let (domain, request) = server("204 No Content", "");
+        let api = Api::new(domain, "secret".to_string()).unwrap();
+        api.mark_all_read(Some(42)).unwrap();
+
+        let request = request.join().unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("put /v1/categories/42/mark-all-as-read "));
+        assert!(request.contains("x-auth-token: secret"));
+    }
+
+    #[test]
+    fn marks_all_entries_read_for_the_authenticated_user() {
+        let (domain, requests) =
+            server_sequence(&[("200 OK", r#"{"id":99}"#), ("204 No Content", "")]);
+        let api = Api::new(domain, "secret".to_string()).unwrap();
+        api.mark_all_read(None).unwrap();
+
+        let requests = requests.join().unwrap();
+        let me_request = requests[0].to_ascii_lowercase();
+        let mark_all_request = requests[1].to_ascii_lowercase();
+        assert!(me_request.starts_with("get /v1/me "));
+        assert!(me_request.contains("x-auth-token: secret"));
+        assert!(mark_all_request.starts_with("put /v1/users/99/mark-all-as-read "));
+        assert!(mark_all_request.contains("x-auth-token: secret"));
+    }
+
+    #[test]
+    fn rejects_an_invalid_current_user_response() {
+        let (domain, request) = server("200 OK", r#"{"id":"99"}"#);
+        let api = Api::new(domain, "secret".to_string()).unwrap();
+        let error = api.mark_all_read(None).unwrap_err();
+
+        assert!(error.contains("numeric 'id'"));
+        request.join().unwrap();
+    }
+
+    #[test]
+    fn rejects_a_non_successful_mark_all_response() {
+        let (domain, request) = server("403 Forbidden", r#"{"error_message":"denied"}"#);
+        let api = Api::new(domain, "secret".to_string()).unwrap();
+        let error = api.mark_all_read(Some(42)).unwrap_err();
+
+        assert_eq!(error, "denied");
+        request.join().unwrap();
     }
 }
